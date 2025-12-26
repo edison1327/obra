@@ -4,10 +4,12 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import { Plus, Search, Phone, Mail, MapPin } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 
 const Suppliers = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const { theme } = useTheme();
+  const { hasPermission } = useAuth();
   const isDark = theme === 'dark';
 
   const cardBg = isDark ? 'bg-gray-800' : 'bg-white';
@@ -21,21 +23,35 @@ const Suppliers = () => {
 
   const suppliers = useLiveQuery(() => 
     db.suppliers
-      .filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()))
-      .toArray()
+      .filter(s => {
+        const term = searchTerm.trim().toLowerCase();
+        if (!term) return true;
+        return (
+          (s.name || '').toLowerCase().includes(term) ||
+          (s.contact || '').toLowerCase().includes(term) ||
+          (s.phone || '').toLowerCase().includes(term) ||
+          (s.email || '').toLowerCase().includes(term) ||
+          (s.address || '').toLowerCase().includes(term) ||
+          (s.notes || '').toLowerCase().includes(term)
+        );
+      })
+      .toArray(),
+    [searchTerm]
   ) || [];
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <h1 className={`text-2xl font-bold ${textColor}`}>Panel de Proveedores</h1>
-        <Link
-          to="/suppliers/new"
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition"
-        >
-          <Plus size={20} />
-          Nuevo Proveedor
-        </Link>
+        {hasPermission('suppliers.create') && (
+          <Link
+            to="/suppliers/new"
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition"
+          >
+            <Plus size={20} />
+            Nuevo Proveedor
+          </Link>
+        )}
       </div>
 
       {/* Search */}
@@ -79,7 +95,9 @@ const Suppliers = () => {
                 </div>
               </div>
               <div className="mt-4 flex justify-end">
-                  <Link to={`/suppliers/edit/${supplier.id}`} className={`text-blue-600 ${isDark ? 'text-blue-400' : ''} text-sm hover:underline`}>Editar</Link>
+                  {hasPermission('suppliers.edit') && (
+                    <Link to={`/suppliers/edit/${supplier.id}`} className={`text-blue-600 ${isDark ? 'text-blue-400' : ''} text-sm hover:underline`}>Editar</Link>
+                  )}
               </div>
             </div>
           ))

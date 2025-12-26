@@ -1,11 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
+import { SyncService } from '../services/SyncService';
 import { Plus } from 'lucide-react';
 import toast from 'react-hot-toast';
+import SearchableSelect from '../components/SearchableSelect';
+import Modal from '../components/Modal';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 
 const Transactions = () => {
+  const { hasPermission, user } = useAuth();
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
@@ -21,17 +26,47 @@ const Transactions = () => {
 
   const [type, setType] = useState<'income' | 'expense'>('expense');
   const [category, setCategory] = useState<string>('');
-  const [customCategory, setCustomCategory] = useState<string>('');
   const [projectId, setProjectId] = useState('');
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [description, setDescription] = useState('');
+  const [viewMoreName, setViewMoreName] = useState<string | null>(null);
+
+  const toSentenceCase = (str: string) => {
+    if (!str) return '';
+    return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+  };
 
   // Fetch projects
-  const projects = useLiveQuery(() => db.projects.toArray()) || [];
+  const projects = useLiveQuery(async () => {
+    if (user?.projectId) {
+      const userProject = await db.projects.get(Number(user.projectId));
+      return userProject ? [userProject] : [];
+    }
+    return db.projects.toArray();
+  }, [user?.projectId]) || [];
+
+  // Auto-select project if user has one assigned
+  useEffect(() => {
+    if (user?.projectId) {
+      setProjectId(user.projectId.toString());
+    }
+  }, [user?.projectId]);
+
+  const projectOptions = projects.map(p => ({ value: p.id!, label: p.name }));
   
   // Fetch categories
-  const categoriesList = useLiveQuery(() => db.categories.toArray()) || [];
+  const categoriesList = useLiveQuery(async () => {
+    if (type === 'income') {
+      return db.categories.where('type').equals('income').toArray();
+    } else {
+      return db.categories.where('type').equals('expense').toArray();
+    }
+  }, [type]) || [];
+
+  const categoryOptions = categoriesList
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(c => ({ value: c.name, label: c.name }));
   
   // Fetch recent transactions
   const transactions = useLiveQuery(() => 
@@ -41,7 +76,6 @@ const Transactions = () => {
   const handleTypeChange = (newType: 'income' | 'expense') => {
     setType(newType);
     setCategory('');
-    setCustomCategory('');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -52,26 +86,16 @@ const Transactions = () => {
         return;
       }
 
-      const finalCategory = category === 'Otros' ? customCategory : category;
-
       await db.transactions.add({
         projectId,
         type: type === 'income' ? 'Ingreso' : 'Gasto',
-        category: finalCategory,
+        category,
         amount: Number(amount),
         date,
         description
       });
 
-      // Update project balance (optional, simplified logic)
-      // In a real app you'd sum all transactions dynamically or update a running balance
-      const project = await db.projects.get(Number(projectId));
-      if (project) {
-        // Parse current balance
-        // This is tricky because balance is stored as string "S/ ..." in current schema
-        // Ideally we should refactor balance to be a number.
-        // For now, we just save the transaction.
-      }
+      await SyncService.pushToRemote(false);
 
       toast.success('Transacción registrada correctamente');
       // Reset form
@@ -94,22 +118,19 @@ const Transactions = () => {
       <h1 className={`text-2xl font-bold ${textColor}`}>Registro de Ingreso y Gasto</h1>
 
       {/* Input Form */}
-      <div className={`${cardBg} p-6 rounded-lg shadow-sm`}>
-        <form onSubmit={handleSubmit}>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      {hasPermission('transactions.create') && (
+        <div className={`${cardBg} p-6 rounded-lg shadow-sm`}>
+          <form onSubmit={handleSubmit}>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div>
               <label className={`block text-sm font-medium ${labelColor} mb-1`}>Seleccionar Obra <span className="text-red-500">*</span></label>
-              <select 
-                required
+              <SearchableSelect
+                options={projectOptions}
                 value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
-              >
-                <option value="">Seleccione una obra...</option>
-                {projects.map(project => (
-                  <option key={project.id} value={project.id?.toString()}>{project.name}</option>
-                ))}
-              </select>
+                onChange={setProjectId}
+                className="w-full"
+                placeholder="Seleccione una obra..."
+              />
             </div>
 
             <div>
@@ -139,44 +160,35 @@ const Transactions = () => {
 
             <div>
               <label className={`block text-sm font-medium ${labelColor} mb-1`}>Categoría <span className="text-red-500">*</span></label>
-              <select 
+              <SearchableSelect
+                key={type}
                 required
+                options={categoryOptions}
                 value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
-              >
-                <option value="">Seleccione categoría...</option>
-                {categoriesList.map(cat => (
-                  <option key={cat.id} value={cat.name}>{cat.name}</option>
-                ))}
-              </select>
+                onChange={setCategory}
+                className="w-full"
+                placeholder="Seleccione categoría..."
+              />
             </div>
-
-            {category === 'Otros' && (
-              <div>
-                <label className={`block text-sm font-medium ${labelColor} mb-1`}>Especificar Otro</label>
-                <input
-                  type="text"
-                  value={customCategory}
-                  onChange={(e) => setCustomCategory(e.target.value)}
-                  placeholder="Especifique la categoría"
-                  className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
-                />
-              </div>
-            )}
 
             <div>
               <label className={`block text-sm font-medium ${labelColor} mb-1`}>
-                {type === 'income' ? 'Ingresar Cantidad' : 'Ingresar Cantidad'} <span className="text-red-500">*</span>
+                Ingresar Monto <span className="text-red-500">*</span>
               </label>
-              <input
-                required
-                type="number"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
-                placeholder="0.00"
-              />
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <span className={`${subTextColor}`}>S/</span>
+                </div>
+                <input
+                  required
+                  type="number"
+                  step="0.01"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  className={`w-full pl-8 pr-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText} no-spinner`}
+                  placeholder="0.00"
+                />
+              </div>
             </div>
 
             <div>
@@ -213,8 +225,9 @@ const Transactions = () => {
               {type === 'income' ? 'Registrar Ingreso' : 'Registrar Gasto'}
             </button>
           </div>
-        </form>
-      </div>
+          </form>
+        </div>
+      )}
 
       {/* Recent Transactions List */}
       <div className={`${cardBg} rounded-lg shadow-sm overflow-hidden transition-colors duration-200`}>
@@ -236,7 +249,19 @@ const Transactions = () => {
               {transactions.map((t) => (
                 <tr key={t.id} className={`${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-50'} transition-colors`}>
                   <td className={`px-6 py-4 whitespace-nowrap text-sm ${subTextColor}`}>{t.date}</td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm ${isDark ? 'text-white' : 'text-gray-900'}`}>{getProjectName(t.projectId)}</td>
+                  <td className={`px-6 py-4 text-[13px] font-bold text-justify ${isDark ? 'text-white' : 'text-gray-900'} break-words min-w-[200px] max-w-xs`}>
+                    <div className="line-clamp-3">
+                      {toSentenceCase(getProjectName(t.projectId))}
+                    </div>
+                    {getProjectName(t.projectId).length > 100 && (
+                      <button
+                        onClick={() => setViewMoreName(getProjectName(t.projectId))}
+                        className="text-blue-500 hover:text-blue-700 text-xs font-normal focus:outline-none mt-1 hover:underline block"
+                      >
+                        Ver más
+                      </button>
+                    )}
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm">
                     <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
                       t.type === 'Ingreso' ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-400' : 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-400'
@@ -248,7 +273,7 @@ const Transactions = () => {
                   <td className={`px-6 py-4 whitespace-nowrap text-sm font-medium ${
                     t.type === 'Ingreso' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
                   }`}>
-                    {t.type === 'Ingreso' ? '+' : '-'} S/ {t.amount.toLocaleString()}
+                    {t.type === 'Ingreso' ? '+' : '-'} S/ {Number(t.amount).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </td>
                 </tr>
               ))}
@@ -261,6 +286,20 @@ const Transactions = () => {
           </table>
         </div>
       </div>
+
+      {viewMoreName && (
+        <Modal
+          isOpen={!!viewMoreName}
+          onClose={() => setViewMoreName(null)}
+          title="Nombre de Obra"
+        >
+          <div className="p-1">
+            <p className={`text-base text-justify ${isDark ? 'text-white' : 'text-gray-900'} break-words leading-relaxed`}>
+              {toSentenceCase(viewMoreName)}
+            </p>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

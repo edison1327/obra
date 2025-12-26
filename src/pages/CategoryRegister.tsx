@@ -11,8 +11,8 @@ const CategoryRegister = () => {
 
   const navigate = useNavigate();
   const { id } = useParams();
-  const [type, setType] = useState<'income' | 'expense'>('income');
-  const [classification, setClassification] = useState('');
+  const [type, setType] = useState<'income' | 'expense' | 'warehouse'>('income');
+  const [classification, setClassification] = useState('Ingreso');
   const [name, setName] = useState('');
 
   // Theme variables
@@ -36,41 +36,48 @@ const CategoryRegister = () => {
     }
   }, [id]);
 
-  const incomeClassifications = [
-    'Valorización',
-    'Adelanto',
-    'Liquidación'
-  ];
-
-  const expenseClassifications = [
-    'Pago de planilla',
-    'Pago de materiales',
-    'Penalidades',
-    'Alquileres'
-  ];
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (!name.trim()) {
+      toast.error('El nombre de la categoría es obligatorio');
+      return;
+    }
+
+    // Safeguard: ensure classification matches type if empty
+    let finalClassification = classification;
+    if (!finalClassification) {
+      if (type === 'income') finalClassification = 'Ingreso';
+      else if (type === 'expense') finalClassification = 'Gasto';
+      else if (type === 'warehouse') finalClassification = 'Almacen';
+      setClassification(finalClassification);
+    }
+
+    if (!finalClassification) {
+      toast.error('Error: Sub categoría no definida. Seleccione un tipo nuevamente.');
+      return;
+    }
+
     try {
       if (id) {
         await db.categories.update(Number(id), {
           name,
           type,
-          classification
+          classification: finalClassification
         });
         toast.success('Categoría actualizada correctamente');
       } else {
         await db.categories.add({
           name,
           type,
-          classification
+          classification: finalClassification
         });
         toast.success('Categoría guardada correctamente');
       }
       navigate('/categories');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error saving category:', error);
-      toast.error('Error al guardar la categoría');
+      toast.error(`Error al guardar: ${error.message || 'Error desconocido'}`);
     }
   };
 
@@ -97,7 +104,7 @@ const CategoryRegister = () => {
                 type="button"
                 onClick={() => {
                   setType('income');
-                  setClassification('');
+                  setClassification('Ingreso');
                 }}
                 className={`flex-1 py-2 text-sm font-medium transition-colors ${
                   type === 'income' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : `${cardBg} ${subTextColor} hover:bg-gray-50 dark:hover:bg-gray-700`
@@ -110,7 +117,7 @@ const CategoryRegister = () => {
                 type="button"
                 onClick={() => {
                   setType('expense');
-                  setClassification('');
+                  setClassification('Gasto');
                 }}
                 className={`flex-1 py-2 text-sm font-medium transition-colors ${
                   type === 'expense' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' : `${cardBg} ${subTextColor} hover:bg-gray-50 dark:hover:bg-gray-700`
@@ -118,26 +125,33 @@ const CategoryRegister = () => {
               >
                 Gasto
               </button>
+              <div className="w-px bg-gray-300 dark:bg-gray-600"></div>
+              <button
+                type="button"
+                onClick={() => {
+                  setType('warehouse');
+                  setClassification('Almacen');
+                }}
+                className={`flex-1 py-2 text-sm font-medium transition-colors ${
+                  type === 'warehouse' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' : `${cardBg} ${subTextColor} hover:bg-gray-50 dark:hover:bg-gray-700`
+                }`}
+              >
+                Almacén
+              </button>
             </div>
           </div>
 
           {/* Classification (The "campos" requested) */}
           <div>
             <label className={`block text-sm font-medium ${labelColor} mb-1`}>
-              Clasificación <span className="text-red-500">*</span>
+              Sub Categoría <span className="text-red-500">*</span>
             </label>
-            <select
-              required
+            <input
+              type="text"
               value={classification}
-              onChange={(e) => setClassification(e.target.value)}
-              className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
-            >
-              <option value="">Seleccione una clasificación...</option>
-              {type === 'income' 
-                ? incomeClassifications.map(c => <option key={c} value={c}>{c}</option>)
-                : expenseClassifications.map(c => <option key={c} value={c}>{c}</option>)
-              }
-            </select>
+              readOnly
+              className={`w-full px-4 py-2 border ${inputBorder} rounded-lg ${isDark ? 'bg-gray-600' : 'bg-gray-100'} ${inputText} opacity-75 cursor-not-allowed outline-none`}
+            />
           </div>
 
           {/* Name */}

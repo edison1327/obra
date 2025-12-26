@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Save, X } from 'lucide-react';
 import { db } from '../db/db';
+import { SyncService } from '../services/SyncService';
 import toast from 'react-hot-toast';
 import { useTheme } from '../context/ThemeContext';
 
@@ -65,6 +66,8 @@ const SupplierRegister = () => {
       } else {
         await db.suppliers.add(supplierData);
       }
+
+      await SyncService.pushToRemote(false);
 
       toast.success('Proveedor guardado correctamente');
       navigate('/suppliers');

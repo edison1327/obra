@@ -3,7 +3,9 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Save, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { db } from '../db/db';
+import { SyncService } from '../services/SyncService';
 import { useTheme } from '../context/ThemeContext';
+import SearchableSelect from '../components/SearchableSelect';
 
 const LoanRegister = () => {
   const navigate = useNavigate();
@@ -30,6 +32,14 @@ const LoanRegister = () => {
   const [dueDate, setDueDate] = useState('');
   const [status, setStatus] = useState<'Pendiente' | 'Pagado' | 'Vencido'>('Pendiente');
   const [description, setDescription] = useState('');
+  const [installments, setInstallments] = useState('');
+  const [interestRate, setInterestRate] = useState('');
+
+  const statusOptions = [
+    { value: "Pendiente", label: "Pendiente" },
+    { value: "Pagado", label: "Pagado" },
+    { value: "Vencido", label: "Vencido" },
+  ];
 
   useEffect(() => {
     if (id) {
@@ -42,6 +52,8 @@ const LoanRegister = () => {
           setDueDate(loan.dueDate || '');
           setStatus(loan.status);
           setDescription(loan.description || '');
+          setInstallments(loan.installments ? loan.installments.toString() : '');
+          setInterestRate(loan.interestRate ? loan.interestRate.toString() : '');
         }
       });
     } else {
@@ -60,7 +72,9 @@ const LoanRegister = () => {
         date,
         dueDate,
         status,
-        description
+        description,
+        installments: installments ? Number(installments) : undefined,
+        interestRate: interestRate ? Number(interestRate) : undefined
       };
 
       if (id) {
@@ -70,6 +84,7 @@ const LoanRegister = () => {
         await db.loans.add(loanData);
         toast.success('Préstamo guardado correctamente');
       }
+      await SyncService.pushToRemote(false);
       navigate('/loans');
     } catch (error) {
       console.error('Error saving loan:', error);
@@ -152,6 +167,40 @@ const LoanRegister = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <label className={`block text-sm font-medium ${subTextColor} mb-1`}>
+                Cantidad de Cuotas
+              </label>
+              <input 
+                type="number" 
+                value={installments}
+                onChange={(e) => setInstallments(e.target.value)}
+                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
+                placeholder="Ej. 12"
+              />
+            </div>
+
+            <div>
+              <label className={`block text-sm font-medium ${subTextColor} mb-1`}>
+                % Interés
+              </label>
+              <div className="relative">
+                <input 
+                  type="number" 
+                  step="0.01"
+                  value={interestRate}
+                  onChange={(e) => setInterestRate(e.target.value)}
+                  className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
+                  placeholder="Ej. 5"
+                />
+                <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
+                  <span className={`${subTextColor}`}>%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label className={`block text-sm font-medium ${subTextColor} mb-1`}>
                 Fecha <span className="text-red-500">*</span>
               </label>
               <input 
@@ -176,15 +225,14 @@ const LoanRegister = () => {
 
           <div>
             <label className={`block text-sm font-medium ${subTextColor} mb-1`}>Estado</label>
-            <select
+            <SearchableSelect
+              options={statusOptions}
               value={status}
-              onChange={(e) => setStatus(e.target.value as any)}
-              className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
-            >
-              <option value="Pendiente">Pendiente</option>
-              <option value="Pagado">Pagado</option>
-              <option value="Vencido">Vencido</option>
-            </select>
+              onChange={(value) => setStatus(value as any)}
+              className="w-full"
+              placeholder="Seleccione estado..."
+              required
+            />
           </div>
 
           <div>

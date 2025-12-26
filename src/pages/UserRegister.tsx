@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Save, X, Shield, Eye, EyeOff } from 'lucide-react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import toast from 'react-hot-toast';
 import { useTheme } from '../context/ThemeContext';
+import SearchableSelect from '../components/SearchableSelect';
+import { SyncService } from '../services/SyncService';
 
 const UserRegister = () => {
   const { theme } = useTheme();
@@ -19,7 +22,8 @@ const UserRegister = () => {
     password: '',
     confirmPassword: '',
     role: '',
-    status: 'Activo'
+    status: 'Activo',
+    projectId: ''
   });
 
   // Theme variables
@@ -34,6 +38,17 @@ const UserRegister = () => {
   const closeButtonColor = isDark ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700';
   const cancelButtonHover = isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-50';
 
+  const roles = useLiveQuery(
+    () => db.roles.where('status').equals('Activo').toArray(),
+    []
+  );
+  const projects = useLiveQuery(
+    () => db.projects.where('status').anyOf(['En Ejecución', 'En Planificación']).toArray(),
+    []
+  ) || [];
+
+  const roleOptions = roles?.map(role => ({ value: role.name, label: role.name })) || [];
+
   useEffect(() => {
     if (id) {
       db.users.get(Number(id)).then(user => {
@@ -45,7 +60,8 @@ const UserRegister = () => {
             password: user.password || '',
             confirmPassword: user.password || '',
             role: user.role,
-            status: user.status
+            status: user.status,
+            projectId: user.projectId || ''
           });
         }
       });
@@ -75,7 +91,8 @@ const UserRegister = () => {
         email: formData.email,
         password: formData.password,
         role: formData.role as any,
-        status: formData.status as any
+        status: formData.status as any,
+        projectId: formData.projectId
       };
 
       if (id) {
@@ -83,6 +100,7 @@ const UserRegister = () => {
       } else {
         await db.users.add(user);
       }
+      await SyncService.pushToRemote(false);
       toast.success('Usuario guardado correctamente');
       navigate('/users');
     } catch (error) {
@@ -192,19 +210,33 @@ const UserRegister = () => {
 
             <div className="md:col-span-2">
               <label className={`block text-sm font-medium ${labelColor} mb-1`}>Rol de Usuario</label>
-              <select 
-                name="role"
+              <SearchableSelect
+                options={roleOptions}
                 value={formData.role}
-                onChange={handleChange}
+                onChange={(value) => setFormData(prev => ({ ...prev, role: value }))}
+                className="w-full"
+                placeholder="Seleccione un rol..."
                 required
-                className={`w-full px-4 py-2 border ${borderColor} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${isDark ? 'text-white' : 'text-gray-900'}`}
-              >
-                <option value="">Seleccione un rol...</option>
-                <option value="Administrador">Administrador (Acceso Total)</option>
-                <option value="Supervisor">Supervisor (Gestión de Obras)</option>
-                <option value="Contador">Contador (Ingresos y Gastos)</option>
-                <option value="Usuario">Usuario (Solo Lectura)</option>
-              </select>
+              />
+            </div>
+            
+            <div className="md:col-span-2">
+              <label className={`block text-sm font-medium ${labelColor} mb-1`}>Obra Asignada</label>
+              <SearchableSelect
+                options={[
+                  { value: '', label: 'Seleccione una obra...' },
+                  ...projects.map(p => ({
+                    value: p.id?.toString() || '',
+                    label: `${p.name} (${p.status})`
+                  }))
+                ]}
+                value={formData.projectId}
+                onChange={(value) => setFormData(prev => ({ ...prev, projectId: value }))}
+                className="w-full"
+              />
+              <p className={`mt-1 text-xs ${infoBoxSubText}`}>
+                Solo se muestran obras en estado En Ejecución y En Planificación.
+              </p>
             </div>
 
              <div className="md:col-span-2">

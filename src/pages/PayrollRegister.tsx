@@ -2,16 +2,21 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, Payroll } from '../db/db';
-import { ArrowLeft, Plus, Trash2, Save, Printer, Upload, Eye, X } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Save, Printer, Upload, Eye, X, Users } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import toast from 'react-hot-toast';
+import SearchableSelect from '../components/SearchableSelect';
+import WorkerModal from '../components/WorkerModal';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { SyncService } from '../services/SyncService';
 
 const PayrollRegister = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const { theme } = useTheme();
+  const { user } = useAuth();
 
   const isDark = theme === 'dark';
   const textColor = isDark ? 'text-white' : 'text-gray-800';
@@ -26,8 +31,32 @@ const PayrollRegister = () => {
   const iconColor = isDark ? 'text-gray-300' : 'text-gray-600';
   const buttonHover = isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100';
 
-  const projects = useLiveQuery(() => db.projects.toArray()) || [];
+  const projects = useLiveQuery(async () => {
+    if (user?.projectId) {
+      const userProject = await db.projects.get(Number(user.projectId));
+      return userProject ? [userProject] : [];
+    }
+    return db.projects.toArray();
+  }, [user?.projectId]) || [];
+
   const workers = useLiveQuery(() => db.workers.where('status').equals('Activo').toArray()) || [];
+
+  // Fetch Company Data & Logo
+  const companyData = useLiveQuery(async () => {
+    const keys = ['company_name', 'company_address', 'company_website', 'company_email'];
+    const settings = await db.settings.where('key').anyOf(keys).toArray();
+    return {
+      name: settings.find(s => s.key === 'company_name')?.value || '',
+      address: settings.find(s => s.key === 'company_address')?.value || '',
+      website: settings.find(s => s.key === 'company_website')?.value || '',
+      email: settings.find(s => s.key === 'company_email')?.value || ''
+    };
+  });
+
+  const systemLogo = useLiveQuery(async () => {
+    const setting = await db.settings.where('key').equals('system_logo').first();
+    return setting?.value;
+  });
 
   const [projectId, setProjectId] = useState('');
   const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
@@ -37,9 +66,27 @@ const PayrollRegister = () => {
   const [details, setDetails] = useState<Payroll['details']>([]);
   const [selectedWorkerId, setSelectedWorkerId] = useState('');
   const [viewImage, setViewImage] = useState<string | null>(null);
+  const [isWorkerModalOpen, setIsWorkerModalOpen] = useState(false);
 
-  // Payment methods
+  // Auto-select project if user has one assigned
+  useEffect(() => {
+    if (user?.projectId && !id) { // Only if not editing an existing payroll
+      setProjectId(user.projectId.toString());
+    }
+  }, [user?.projectId, id]);
+
+  const projectOptions = projects.map(p => ({ value: p.id!, label: p.name }));
+
+  const statusOptions = [
+    { value: "Borrador", label: "Borrador" },
+    { value: "Aprobado", label: "Aprobado" },
+    { value: "Pagado", label: "Pagado" },
+  ];
+
+  const workerOptions = workers.map(w => ({ value: w.id!, label: w.name }));
+
   const paymentMethods = ['Efectivo', 'Transferencia', 'Yape/Plin', 'Cheque'];
+  const paymentMethodOptions = paymentMethods.map(m => ({ value: m, label: m }));
 
   // Load existing payroll if editing
   useEffect(() => {
@@ -55,6 +102,10 @@ const PayrollRegister = () => {
       });
     }
   }, [id]);
+
+  const handleWorkerSuccess = (workerId: number) => {
+    setSelectedWorkerId(workerId.toString());
+  };
 
   const handleAddWorker = () => {
     if (!selectedWorkerId) return;
@@ -115,39 +166,74 @@ const PayrollRegister = () => {
     const project = projects.find(p => p.id?.toString() === projectId);
     const worker = workers.find(w => w.id === detail.workerId);
     
-    // Header
+    // Logo
+    if (systemLogo) {
+        try {
+            const isPng = systemLogo.startsWith('data:image/png');
+            const format = isPng ? 'PNG' : 'JPEG';
+            doc.addImage(systemLogo, format, 14, 10, 25, 25);
+        } catch (e) {
+            console.error('Error adding logo to PDF', e);
+        }
+    }
+
+    // Header Title
     doc.setFontSize(18);
     doc.text('BOLETA DE PAGO', 105, 20, { align: 'center' });
     
+    // Company Info (Top Right)
+    if (companyData?.name) {
+        doc.setFontSize(10);
+        doc.text(companyData.name, 195, 15, { align: 'right' });
+        if (companyData.address) {
+            doc.setFontSize(8);
+            doc.text(companyData.address, 195, 20, { align: 'right' });
+        }
+        if (companyData.email) {
+            doc.setFontSize(8);
+            doc.text(companyData.email, 195, 24, { align: 'right' });
+        }
+    }
+
     doc.setFontSize(10);
-    doc.text(`Fecha de Emisión: ${new Date().toLocaleDateString()}`, 150, 30);
+    doc.text(`Fecha de Emisión: ${new Date().toLocaleDateString()}`, 195, 30, { align: 'right' });
     
     // Company/Project Info
-    doc.setDrawColor(0);
-    doc.setFillColor(240, 240, 240);
+    doc.setDrawColor(200, 200, 200);
+    doc.setFillColor(248, 250, 252); // Very light gray (slate-50)
     doc.rect(14, 35, 182, 25, 'F');
+    doc.rect(14, 35, 182, 25, 'S'); // Border
     
-    doc.setFontSize(12);
+    doc.setFontSize(11);
+    doc.setTextColor(41, 128, 185); // Blue title
     doc.setFont('helvetica', 'bold');
-    doc.text('EMPLEADOR / OBRA', 20, 42);
+    doc.text('EMPLEADOR / OBRA', 20, 43);
     
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
-    doc.text(`Obra: ${project?.name || 'N/A'}`, 20, 50);
-    doc.text(`Cliente: ${project?.client || 'N/A'}`, 20, 55);
-    doc.text(`Periodo: ${new Date(startDate).toLocaleDateString()} al ${new Date(endDate).toLocaleDateString()}`, 120, 50);
+    doc.setFontSize(9);
+    doc.setTextColor(60, 60, 60); // Dark gray text
+    doc.text(`Empleador: ${companyData?.name || 'N/A'}`, 20, 50);
+    doc.text(`Obra: ${project?.name || 'N/A'}`, 20, 55);
+    doc.text(`Cliente: ${project?.client || 'N/A'}`, 110, 50);
+    doc.text(`Periodo: ${new Date(startDate).toLocaleDateString()} al ${new Date(endDate).toLocaleDateString()}`, 110, 55);
     
     // Worker Info
+    doc.setFillColor(248, 250, 252); // Ensure fill color is reset
+    doc.setDrawColor(200, 200, 200);
     doc.rect(14, 65, 182, 25, 'F');
-    doc.setFontSize(12);
+    doc.rect(14, 65, 182, 25, 'S'); // Border
+
+    doc.setFontSize(11);
+    doc.setTextColor(41, 128, 185); // Blue title
     doc.setFont('helvetica', 'bold');
-    doc.text('TRABAJADOR', 20, 72);
+    doc.text('TRABAJADOR', 20, 73);
     
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
+    doc.setFontSize(9);
+    doc.setTextColor(60, 60, 60);
     doc.text(`Nombre: ${detail.workerName}`, 20, 80);
     doc.text(`Cargo: ${detail.role}`, 20, 85);
-    doc.text(`DNI: ${worker?.documentNumber || '-'}`, 120, 80);
+    doc.text(`DNI: ${worker?.documentNumber || '-'}`, 110, 80);
     
     // Details Table
     
@@ -207,7 +293,7 @@ const PayrollRegister = () => {
     setDetails(details.filter((_, i) => i !== index));
   };
 
-  const totalAmount = details.reduce((sum, item) => sum + item.amount, 0);
+  const totalAmount = details.reduce((sum, item) => sum + Number(item.amount), 0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -232,6 +318,7 @@ const PayrollRegister = () => {
       } else {
         await db.payrolls.add(payrollData);
       }
+      await SyncService.pushToRemote(false);
       toast.success('Planilla guardada correctamente');
       navigate('/payrolls');
     } catch (error) {
@@ -260,29 +347,23 @@ const PayrollRegister = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className={`block text-sm font-medium ${subTextColor} mb-1`}>Obra</label>
-              <select
-                required
+              <SearchableSelect
+                options={projectOptions}
                 value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                className={`w-full rounded-lg ${inputBorder} border p-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent ${inputBg} ${inputText}`}
-              >
-                <option value="">Seleccionar Obra...</option>
-                {projects.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
+                onChange={setProjectId}
+                className="w-full"
+                placeholder="Seleccionar Obra..."
+              />
             </div>
             <div>
               <label className={`block text-sm font-medium ${subTextColor} mb-1`}>Estado</label>
-              <select
+              <SearchableSelect
+                options={statusOptions}
                 value={status}
-                onChange={(e) => setStatus(e.target.value as any)}
-                className={`w-full rounded-lg ${inputBorder} border p-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent ${inputBg} ${inputText}`}
-              >
-                <option value="Borrador">Borrador</option>
-                <option value="Aprobado">Aprobado</option>
-                <option value="Pagado">Pagado</option>
-              </select>
+                onChange={(value) => setStatus(value as any)}
+                className="w-full"
+                placeholder="Seleccionar Estado..."
+              />
             </div>
             <div>
               <label className={`block text-sm font-medium ${subTextColor} mb-1`}>Fecha Inicio</label>
@@ -309,27 +390,34 @@ const PayrollRegister = () => {
 
         {/* Workers List */}
         <div className={`${cardBg} p-6 rounded-lg shadow-sm space-y-4`}>
-          <div className="flex items-center justify-between mb-2">
-            <h2 className={`text-lg font-semibold ${textColor}`}>Detalle de Trabajadores</h2>
-            <div className="flex gap-2">
-              <select
-                value={selectedWorkerId}
-                onChange={(e) => setSelectedWorkerId(e.target.value)}
-                className={`rounded-lg ${inputBorder} border p-2 text-sm w-48 ${inputBg} ${inputText}`}
-              >
-                <option value="">Seleccionar trabajador...</option>
-                {workers.map(w => (
-                  <option key={w.id} value={w.id}>{w.name} - {w.role}</option>
-                ))}
-              </select>
+          <div className={`flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b ${isDark ? 'border-gray-700' : 'border-gray-100'}`}>
+            <div className="flex items-center gap-3">
+              <div className={`p-2 rounded-lg ${isDark ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-50 text-blue-600'}`}>
+                <Users size={20} />
+              </div>
+              <div>
+                <h2 className={`text-lg font-bold ${textColor}`}>Detalle de Trabajadores</h2>
+                <p className={`text-xs ${subTextColor}`}>Gestione el personal para esta planilla</p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 w-full md:w-auto md:max-w-[40%]">
+              <div className="w-full">
+                <SearchableSelect
+                  options={workerOptions}
+                  value={selectedWorkerId}
+                  onChange={setSelectedWorkerId}
+                  placeholder="Buscar y seleccionar trabajador..."
+                  className="w-full"
+                />
+              </div>
               <button
                 type="button"
                 onClick={handleAddWorker}
                 disabled={!selectedWorkerId}
-                className="bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-600 flex items-center gap-2"
+                className="h-[38px] bg-green-600 hover:bg-green-700 text-white px-4 rounded-lg disabled:bg-gray-300 dark:disabled:bg-gray-600 flex items-center justify-center gap-2 transition-all shadow-sm hover:shadow active:scale-95 w-full text-base"
               >
-                <Plus size={16} />
-                Agregar
+                <Plus size={18} />
+                <span className="font-medium whitespace-nowrap">Agregar</span>
               </button>
             </div>
           </div>
@@ -379,15 +467,15 @@ const PayrollRegister = () => {
                         />
                       </td>
                       <td className="px-4 py-2">
-                        <select
-                          value={detail.paymentMethod || 'Efectivo'}
-                          onChange={(e) => updateDetail(index, 'paymentMethod', e.target.value)}
-                          className={`w-32 rounded ${inputBorder} border p-1 text-sm ${inputBg} ${inputText}`}
-                        >
-                          {paymentMethods.map(pm => (
-                            <option key={pm} value={pm}>{pm}</option>
-                          ))}
-                        </select>
+                        <div className="w-40">
+                          <SearchableSelect
+                            options={paymentMethodOptions}
+                            value={detail.paymentMethod || 'Efectivo'}
+                            onChange={(value) => updateDetail(index, 'paymentMethod', value)}
+                            className="w-full"
+                            placeholder="Método..."
+                          />
+                        </div>
                         {detail.paymentMethod === 'Transferencia' && (
                           <div className="mt-2 flex items-center gap-2">
                             <label className="cursor-pointer text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 flex items-center gap-1 text-xs">
@@ -480,6 +568,12 @@ const PayrollRegister = () => {
           </div>
         </div>
       )}
+
+      <WorkerModal 
+        isOpen={isWorkerModalOpen}
+        onClose={() => setIsWorkerModalOpen(false)}
+        onSuccess={handleWorkerSuccess}
+      />
     </div>
   );
 };

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Outlet, Link } from 'react-router-dom';
+import { Outlet, Link, useLocation } from 'react-router-dom';
 import { 
   LayoutDashboard, 
   Building2, 
@@ -19,12 +19,21 @@ import {
   Settings,
   LogOut,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  UserCog,
+  BookOpen,
+  Calendar,
+  HardHat,
+  ChevronDown
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import ConfirmModal from './ConfirmModal';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from '../db/db';
+import NetworkStatus from './NetworkStatus';
 
 import toast, { Toaster } from 'react-hot-toast';
 
@@ -33,11 +42,19 @@ function cn(...inputs: (string | undefined | null | false)[]) {
 }
 
 const Layout = () => {
+  const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [expandedMenus, setExpandedMenus] = useState<string[]>([]);
   const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
   const { theme, toggleTheme } = useTheme();
+  const { user, logout, hasPermission } = useAuth();
   
+  const systemLogo = useLiveQuery(async () => {
+    const setting = await db.settings.where('key').equals('system_logo').first();
+    return setting?.value;
+  });
+
   // Theme-based style helpers
   const isDark = theme === 'dark';
   const bgColor = isDark ? 'bg-gray-900' : 'bg-gray-100';
@@ -47,18 +64,20 @@ const Layout = () => {
   const subTextColor = isDark ? 'text-gray-400' : 'text-gray-500';
   const hoverColor = isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100';
   
-  const userString = localStorage.getItem('user');
-  const user = userString ? JSON.parse(userString) : { name: 'Usuario', role: 'Invitado' };
-
   const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
+
+  const toggleMenu = (path: string) => {
+    setExpandedMenus(prev => 
+      prev.includes(path) ? prev.filter(p => p !== path) : [...prev, path]
+    );
+  };
 
   const handleLogout = () => {
     setIsLogoutModalOpen(true);
   };
 
   const confirmLogout = () => {
-    localStorage.removeItem('user');
-    window.location.reload();
+    logout();
   };
 
   const handleThemeClick = (e: React.MouseEvent) => {
@@ -70,21 +89,35 @@ const Layout = () => {
   };
 
   const navItems = [
-    { name: 'Dashboard', path: '/', icon: LayoutDashboard },
-    { name: 'Obras', path: '/projects', icon: Building2 },
-    { name: 'Obras Terminadas', path: '/projects/finished', icon: CheckCircle2 },
-    { name: 'Análisis', path: '/analysis', icon: PieChart },
-    { name: 'Ingresos y Gastos', path: '/transactions', icon: Wallet },
-    { name: 'Préstamos', path: '/loans', icon: Banknote },
-    { name: 'Planillas', path: '/payrolls', icon: ClipboardList },
-    { name: 'Categorías', path: '/categories', icon: Tags },
-    { name: 'Almacén', path: '/warehouse', icon: Package },
-    { name: 'Proveedores', path: '/suppliers', icon: Users },
-    { name: 'Clientes', path: '/clients', icon: UserCircle },
-    { name: 'Usuarios', path: '/users', icon: Shield },
-    { name: 'Informes', path: '/reports', icon: FileText },
-    { name: 'Configuración', path: '/settings', icon: Settings },
+    { name: 'Dashboard', path: '/', icon: LayoutDashboard, permission: 'view_dashboard' },
+    { name: 'Obras', path: '/projects', icon: Building2, permission: 'projects.view' },
+    { name: 'Obras Terminadas', path: '/projects/finished', icon: CheckCircle2, permission: 'projects.view' },
+    { name: 'Cuaderno de Obra', path: '/daily-logs', icon: BookOpen, permission: 'projects.view' },
+    { name: 'Análisis', path: '/analysis', icon: PieChart, permission: 'reports' },
+    { name: 'Ingresos y Gastos', path: '/transactions', icon: Wallet, permission: 'transactions.view' },
+    { name: 'Préstamos', path: '/loans', icon: Banknote, permission: 'loans.view' },
+    { name: 'Planillas', path: '/payrolls', icon: ClipboardList, permission: 'payrolls.view' },
+    { 
+      name: 'Personal', 
+      path: '/personnel', 
+      icon: HardHat, 
+      permission: 'payrolls.view',
+      children: [
+        { name: 'Asistencia', path: '/attendance', icon: Calendar, permission: 'payrolls.view' },
+        { name: 'Lista de Personal', path: '/workers', icon: Users, permission: 'payrolls.view' },
+      ]
+    },
+    { name: 'Categorías', path: '/categories', icon: Tags, permission: 'settings' },
+    { name: 'Almacén', path: '/warehouse', icon: Package, permission: 'inventory.view' },
+    { name: 'Proveedores', path: '/suppliers', icon: Users, permission: 'inventory.view' },
+    { name: 'Clientes', path: '/clients', icon: UserCircle, permission: 'projects.view' },
+    { name: 'Usuarios', path: '/users', icon: Shield, permission: 'users.view' },
+    { name: 'Roles', path: '/user-roles', icon: UserCog, permission: 'users.view' },
+    { name: 'Informes', path: '/reports', icon: FileText, permission: 'reports' },
+    { name: 'Configuración', path: '/settings', icon: Settings, permission: 'settings' },
   ];
+
+  const filteredNavItems = navItems.filter(item => hasPermission(item.permission));
 
   return (
     <div className={`min-h-screen flex flex-col md:flex-row transition-colors duration-200 ${bgColor} ${textColor}`}>
@@ -113,10 +146,22 @@ const Layout = () => {
       
       {/* Mobile Header */}
       <div className={`md:hidden p-4 flex items-center justify-between shadow-sm z-20 relative border-b ${sidebarColor} ${borderColor}`}>
-        <div className="font-bold text-xl text-blue-600 dark:text-blue-400">OBRAS</div>
-        <button onClick={toggleSidebar} className={`p-2 rounded-lg transition-colors ${subTextColor} ${hoverColor}`}>
-          <Menu size={24} />
-        </button>
+        <div className="flex items-center gap-2">
+            {systemLogo ? (
+              <img 
+                src={systemLogo} 
+                alt="Logo" 
+                className="h-8 w-auto object-contain rounded-lg" 
+              />
+            ) : null}
+          <div className="font-bold text-xl text-blue-600 dark:text-blue-400">Obra Check</div>
+        </div>
+        <div className="flex items-center gap-3">
+          <NetworkStatus collapsed />
+          <button onClick={toggleSidebar} className={`p-2 rounded-lg transition-colors ${subTextColor} ${hoverColor}`}>
+            <Menu size={24} />
+          </button>
+        </div>
       </div>
 
       {/* Sidebar */}
@@ -127,13 +172,21 @@ const Layout = () => {
       )}>
         <div className={`p-6 border-b flex items-center justify-between ${borderColor} ${isCollapsed ? 'justify-center p-4' : ''} relative`}>
           <div className="flex items-center gap-3">
-            <div className="bg-blue-600 p-2 rounded-lg shrink-0">
-              <Building2 className="text-white" size={24} />
-            </div>
-            {!isCollapsed && <div className={`font-bold text-2xl ${textColor} transition-opacity duration-200`}>OBRAS</div>}
+            {systemLogo ? (
+              <img 
+                src={systemLogo} 
+                alt="Logo" 
+                className="h-10 w-auto object-contain rounded-lg" 
+              />
+            ) : (
+              <div className="bg-blue-600 p-2 rounded-lg shrink-0">
+                <Building2 className="text-white" size={24} />
+              </div>
+            )}
+            {!isCollapsed && <div className={`font-bold text-2xl ${textColor} transition-opacity duration-200`}>Obra Check</div>}
           </div>
           <button 
-            onClick={() => setIsSidebarOpen(false)} 
+            onClick={() => setIsSidebarOpen(false)}  
             className="md:hidden p-2 text-gray-500 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
           >
             <X size={24} />
@@ -154,31 +207,87 @@ const Layout = () => {
               Menu Principal
             </div>
           )}
-          <ul className="space-y-1">
-            {navItems.map((item) => {
-              const isActive = location.pathname === item.path;
-              const Icon = item.icon;
-              return (
-                <li key={item.path}>
-                  <Link
-                    to={item.path}
-                    onClick={() => setIsSidebarOpen(false)}
-                    className={cn(
-                      "flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200",
-                      isActive 
-                        ? "bg-blue-600 text-white shadow-md shadow-blue-500/30" 
-                        : `${subTextColor} ${hoverColor} hover:text-blue-600`,
-                      isCollapsed ? "justify-center" : ""
+          <div className="space-y-1">
+            {filteredNavItems.map((item) => {
+              // Check if item has children
+              if ('children' in item && item.children) {
+                const isExpanded = expandedMenus.includes(item.path);
+                const isActive = item.children.some(child => location.pathname === child.path);
+                const Icon = item.icon;
+                
+                return (
+                  <div key={item.path}>
+                    <button
+                      onClick={() => toggleMenu(item.path)}
+                      className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium transition-colors ${
+                        isActive
+                          ? isDark ? 'bg-blue-900/20 text-blue-400 border-r-2 border-blue-500' : 'bg-blue-50 text-blue-600 border-r-2 border-blue-600'
+                          : isDark ? 'text-gray-400 hover:bg-gray-800 hover:text-gray-200' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                      } ${isCollapsed ? 'justify-center px-2' : ''}`}
+                      title={isCollapsed ? item.name : ''}
+                    >
+                      <Icon size={20} />
+                      {!isCollapsed && (
+                        <>
+                          <span className="flex-1 text-left">{item.name}</span>
+                          <ChevronDown 
+                              size={16} 
+                              className={`transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
+                          />
+                        </>
+                      )}
+                    </button>
+                    
+                    {/* Children */}
+                    {isExpanded && !isCollapsed && (
+                      <div className={isDark ? 'bg-gray-900/50' : 'bg-gray-50'}>
+                          {item.children.map(child => {
+                              const isChildActive = location.pathname === child.path;
+                              const ChildIcon = child.icon;
+                              return (
+                                  <Link
+                                      key={child.path}
+                                      to={child.path}
+                                      onClick={() => setIsSidebarOpen(false)}
+                                      className={`flex items-center gap-3 pl-11 pr-4 py-2 text-sm font-medium transition-colors ${
+                                          isChildActive
+                                              ? isDark ? 'text-blue-400' : 'text-blue-600'
+                                              : isDark ? 'text-gray-500 hover:text-gray-300' : 'text-gray-500 hover:text-gray-900'
+                                      }`}
+                                  >
+                                      <ChildIcon size={18} />
+                                      <span>{child.name}</span>
+                                  </Link>
+                              );
+                          })}
+                      </div>
                     )}
-                    title={isCollapsed ? item.name : ''}
-                  >
-                    <Icon size={20} className={`shrink-0 ${isActive ? "text-white" : ""}`} />
-                    {!isCollapsed && <span className="font-medium whitespace-nowrap overflow-hidden">{item.name}</span>}
-                  </Link>
-                </li>
+                  </div>
+                );
+              }
+
+              const isActive = location.pathname === item.path || 
+                             (item.path !== '/' && location.pathname.startsWith(item.path));
+              const Icon = item.icon;
+              
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  onClick={() => setIsSidebarOpen(false)}
+                  className={`flex items-center gap-3 px-4 py-3 text-sm font-medium transition-colors ${
+                    isActive
+                      ? isDark ? 'bg-blue-900/20 text-blue-400 border-r-2 border-blue-500' : 'bg-blue-50 text-blue-600 border-r-2 border-blue-600'
+                      : isDark ? 'text-gray-400 hover:bg-gray-800 hover:text-gray-200' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                  } ${isCollapsed ? 'justify-center px-2' : ''}`}
+                  title={isCollapsed ? item.name : ''}
+                >
+                  <Icon size={20} />
+                  {!isCollapsed && <span>{item.name}</span>}
+                </Link>
               );
             })}
-          </ul>
+          </div>
         </nav>
 
         <div className={`p-4 border-t ${borderColor}`}>
@@ -188,10 +297,14 @@ const Layout = () => {
             </div>
             {!isCollapsed && (
               <div className="flex-1 min-w-0">
-                <div className={`font-semibold text-sm truncate ${textColor}`}>{user.name}</div>
-                <div className={`text-xs truncate ${subTextColor}`}>{user.role}</div>
+                <div className={`font-semibold text-sm truncate ${textColor}`}>{user?.name || 'Usuario'}</div>
+                <div className={`text-xs truncate ${subTextColor}`}>{user?.role || 'Invitado'}</div>
               </div>
             )}
+          </div>
+
+          <div className={`mb-4 flex ${isCollapsed ? 'justify-center' : ''}`}>
+            <NetworkStatus collapsed={isCollapsed} />
           </div>
 
           <div className={`grid ${isCollapsed ? 'grid-cols-1' : 'grid-cols-2'} gap-2`}>

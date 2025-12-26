@@ -6,9 +6,12 @@ import toast from 'react-hot-toast';
 import ConfirmModal from '../components/ConfirmModal';
 import { useState } from 'react';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { SyncService } from '../services/SyncService';
 
 const Categories = () => {
   const { theme } = useTheme();
+  const { hasPermission } = useAuth();
   const isDark = theme === 'dark';
 
   const navigate = useNavigate();
@@ -34,6 +37,7 @@ const Categories = () => {
     if (deleteId) {
       try {
         await db.categories.delete(deleteId);
+        await SyncService.pushToRemote(false);
         toast.success('Categoría eliminada correctamente');
         setDeleteId(null);
       } catch (error) {
@@ -47,13 +51,15 @@ const Categories = () => {
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <h1 className={`text-2xl font-bold ${textColor}`}>Panel de Categorías</h1>
-        <button 
-          onClick={() => navigate('/categories/new')}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition"
-        >
-          <Plus size={20} />
-          Nueva Categoría
-        </button>
+        {hasPermission('categories.create') && (
+          <button 
+            onClick={() => navigate('/categories/new')}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition"
+          >
+            <Plus size={20} />
+            Nueva Categoría
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
@@ -68,30 +74,38 @@ const Categories = () => {
                 <div className={`p-3 rounded-full ${
                   cat.type === 'income' 
                     ? (isDark ? 'bg-green-900/30 text-green-400' : 'bg-green-100 text-green-600')
+                    : cat.type === 'warehouse'
+                    ? (isDark ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-600')
                     : (isDark ? 'bg-red-900/30 text-red-400' : 'bg-red-100 text-red-600')
                 }`}>
                   <Tag size={24} />
                 </div>
                 <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button 
-                    onClick={() => navigate(`/categories/edit/${cat.id}`)} 
-                    className={`p-1.5 rounded-full transition-colors ${isDark ? 'text-gray-400 hover:text-blue-400 hover:bg-blue-900/30' : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50'}`}
-                    title="Editar"
-                  >
-                    <Edit size={16} />
-                  </button>
-                  <button 
-                    onClick={() => setDeleteId(cat.id!)} 
-                    className={`p-1.5 rounded-full transition-colors ${isDark ? 'text-gray-400 hover:text-red-400 hover:bg-red-900/30' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'}`}
-                    title="Eliminar"
-                  >
-                    <Trash2 size={16} />
-                  </button>
+                  {hasPermission('categories.edit') && (
+                    <button 
+                      onClick={() => navigate(`/categories/edit/${cat.id}`)} 
+                      className={`p-1.5 rounded-full transition-colors ${isDark ? 'text-gray-400 hover:text-blue-400 hover:bg-blue-900/30' : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50'}`}
+                      title="Editar"
+                    >
+                      <Edit size={16} />
+                    </button>
+                  )}
+                  {hasPermission('categories.delete') && (
+                    <button 
+                      onClick={() => setDeleteId(cat.id!)} 
+                      className={`p-1.5 rounded-full transition-colors ${isDark ? 'text-gray-400 hover:text-red-400 hover:bg-red-900/30' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'}`}
+                      title="Eliminar"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
                 </div>
               </div>
               <h3 className={`text-lg font-bold ${textColor} mb-1`}>{cat.name}</h3>
               <div className="flex items-center justify-between">
-                <p className={`text-sm ${subTextColor} capitalize`}>{cat.type === 'income' ? 'Ingreso' : 'Gasto'}</p>
+                <p className={`text-sm ${subTextColor} capitalize`}>
+                  {cat.type === 'income' ? 'Ingreso' : cat.type === 'warehouse' ? 'Almacén' : 'Gasto'}
+                </p>
                 <span className={`text-xs font-medium px-2 py-1 rounded-full ${isDark ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-400'}`}>{cat.count} items</span>
               </div>
             </div>

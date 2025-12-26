@@ -1,34 +1,57 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { FileText, Search, ChevronDown, X } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { FileText, AlertCircle } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, Transaction } from '../db/db';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import SearchableSelect from '../components/SearchableSelect';
+import Modal from '../components/Modal';
 
 const Analysis = ({ filterStatus }: { filterStatus?: string }) => {
   const { theme } = useTheme();
+  const { user } = useAuth();
   const isDark = theme === 'dark';
 
   const [selectedProjectId, setSelectedProjectId] = useState<string>('');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [isOpen, setIsOpen] = useState(false);
-  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [isNameModalOpen, setIsNameModalOpen] = useState(false);
+  const [isClientModalOpen, setIsClientModalOpen] = useState(false);
+
+  useEffect(() => {
+    setIsNameModalOpen(false);
+    setIsClientModalOpen(false);
+  }, [selectedProjectId]);
+
+  const toSentenceCase = (str: string) => {
+    if (!str) return '';
+    return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+  };
 
   // Theme variables
   const textColor = isDark ? 'text-white' : 'text-gray-800';
   const subTextColor = isDark ? 'text-gray-400' : 'text-gray-600';
   const cardBg = isDark ? 'bg-gray-800' : 'bg-white';
-  const borderColor = isDark ? 'border-gray-700' : 'border-gray-200';
   const hoverBg = isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-50';
 
   const projects = useLiveQuery(async () => {
+    let result = [];
     if (filterStatus) {
-      return await db.projects.where('status').equals(filterStatus).toArray();
+      result = await db.projects.where('status').equals(filterStatus).toArray();
+    } else {
+      result = await db.projects.toArray();
     }
-    return await db.projects.toArray();
-  }, [filterStatus]);
+    
+    if (user?.projectId) {
+      return result.filter(p => p.id === Number(user.projectId));
+    }
+    return result;
+  }, [filterStatus, user?.projectId]);
   
+  const projectOptions = useMemo(() => {
+    return projects?.map(p => ({ value: p.id!.toString(), label: p.name })) || [];
+  }, [projects]);
+
   const selectedProject = useLiveQuery(
     async () => {
       if (selectedProjectId) {
@@ -44,14 +67,31 @@ const Analysis = ({ filterStatus }: { filterStatus?: string }) => {
     [selectedProjectId]
   );
 
+  // Fetch Company Data & Logo
+  const companyData = useLiveQuery(async () => {
+    const keys = ['company_name', 'company_address', 'company_website', 'company_email'];
+    const settings = await db.settings.where('key').anyOf(keys).toArray();
+    return {
+      name: settings.find(s => s.key === 'company_name')?.value || '',
+      address: settings.find(s => s.key === 'company_address')?.value || '',
+      website: settings.find(s => s.key === 'company_website')?.value || '',
+      email: settings.find(s => s.key === 'company_email')?.value || ''
+    };
+  });
+
+  const systemLogo = useLiveQuery(async () => {
+    const setting = await db.settings.where('key').equals('system_logo').first();
+    return setting?.value;
+  });
+
   const stats = useMemo(() => {
     if (!transactions) return { income: 0, expense: 0 };
     
     return transactions.reduce((acc, curr) => {
       if (curr.type === 'Ingreso') {
-        acc.income += curr.amount;
+        acc.income += Number(curr.amount);
       } else {
-        acc.expense += curr.amount;
+        acc.expense += Number(curr.amount);
       }
       return acc;
     }, { income: 0, expense: 0 });
@@ -62,43 +102,31 @@ const Analysis = ({ filterStatus }: { filterStatus?: string }) => {
     return selectedProject?.progress || 0;
   }, [selectedProject]);
 
+  const isRisk = useMemo(() => {
+    if (!selectedProject || selectedProject.status === 'Finalizado' || selectedProject.status === 'Cancelado') return false;
+    
+    const currentProgress = selectedProject.progress || 0;
+    if (currentProgress >= 80) return false;
+
+    if (selectedProject.endDate) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const end = new Date(selectedProject.endDate);
+        
+        const diffTime = end.getTime() - today.getTime();
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        
+        return diffDays <= 30;
+    }
+    return false;
+  }, [selectedProject]);
+
   // Set first project as default selected
   useEffect(() => {
     if (projects && projects.length > 0 && !selectedProjectId) {
       setSelectedProjectId(projects[0].id!.toString());
     }
   }, [projects, selectedProjectId]);
-
-  // Sync searchTerm with selectedProject
-  useEffect(() => {
-    if (selectedProject) {
-      setSearchTerm(selectedProject.name);
-    }
-  }, [selectedProject]);
-
-  // Handle click outside
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-        // Revert to selected project name if closed without selection
-        if (selectedProject) {
-            setSearchTerm(selectedProject.name);
-        }
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, [selectedProject]);
-
-  const filteredProjects = useMemo(() => {
-    if (!projects) return [];
-    return projects.filter(p => 
-      p.name.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-  }, [projects, searchTerm]);
 
   const generatePDF = () => {
     if (!selectedProject) return;
@@ -111,19 +139,51 @@ const Analysis = ({ filterStatus }: { filterStatus?: string }) => {
     doc.setFillColor(41, 128, 185); // Professional Blue
     doc.rect(0, 0, pageWidth, 40, 'F');
     
+    // Logo
+    if (systemLogo) {
+        try {
+            const isPng = systemLogo.startsWith('data:image/png');
+            const format = isPng ? 'PNG' : 'JPEG';
+            doc.addImage(systemLogo, format, 14, 5, 30, 30);
+        } catch (e) {
+            console.error('Error adding logo to PDF', e);
+        }
+    }
+
     doc.setFontSize(22);
     doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold');
     
     const reportTitle = selectedProject.status === 'Finalizado' ? 'REPORTE DE CIERRE DE OBRA' : 'REPORTE DE OBRA';
-    doc.text(reportTitle, 14, 25);
+    doc.text(reportTitle, systemLogo ? 50 : 14, 25);
     
+    // Company Info
+    if (companyData?.name) {
+        doc.setFontSize(10);
+        doc.text(companyData.name, pageWidth - 14, 15, { align: 'right' });
+        if (companyData.address) doc.text(companyData.address, pageWidth - 14, 20, { align: 'right' });
+        if (companyData.email) doc.text(companyData.email, pageWidth - 14, 25, { align: 'right' });
+    }
+
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
-    doc.text(`Generado: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`, pageWidth - 14, 25, { align: 'right' });
+    doc.text(`Generado: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`, pageWidth - 14, 35, { align: 'right' });
 
     // --- Project Info Section ---
     let yPos = 55;
+
+    if (isRisk) {
+        doc.setDrawColor(234, 179, 8); // Yellow-500
+        doc.setFillColor(254, 252, 232); // Yellow-50
+        doc.roundedRect(14, yPos, pageWidth - 28, 15, 2, 2, 'FD');
+        
+        doc.setTextColor(161, 98, 7); // text-yellow-700
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'bold');
+        doc.text(`ATENCIÓN: Esta obra está próxima a finalizar (${selectedProject.endDate}) y su avance es inferior al 80%.`, 18, yPos + 10);
+        
+        yPos += 25;
+    }
     
     doc.setFontSize(14);
     doc.setTextColor(41, 128, 185);
@@ -254,12 +314,12 @@ const Analysis = ({ filterStatus }: { filterStatus?: string }) => {
     const cardWidth = 55;
     const gap = (pageWidth - 28 - (cardWidth * 3)) / 2;
 
-    drawCard(14, 'Ingresos', `S/ ${stats.income.toLocaleString('es-PE', { minimumFractionDigits: 2 })}`, [46, 204, 113]);
-    drawCard(14 + cardWidth + gap, 'Gastos', `S/ ${stats.expense.toLocaleString('es-PE', { minimumFractionDigits: 2 })}`, [231, 76, 60]);
+    drawCard(14, 'Ingresos', `S/ ${stats.income.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, [46, 204, 113]);
+    drawCard(14 + cardWidth + gap, 'Gastos', `S/ ${stats.expense.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, [231, 76, 60]);
     
     const profit = stats.income - stats.expense;
     const profitColor: [number, number, number] = profit >= 0 ? [26, 188, 156] : [231, 76, 60];
-    drawCard(14 + (cardWidth + gap) * 2, 'Rentabilidad', `S/ ${profit.toLocaleString('es-PE', { minimumFractionDigits: 2 })}`, profitColor);
+    drawCard(14 + (cardWidth + gap) * 2, 'Rentabilidad', `S/ ${profit.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, profitColor);
 
     yPos += 40;
 
@@ -295,7 +355,7 @@ const Analysis = ({ filterStatus }: { filterStatus?: string }) => {
       t.description,
       t.category,
       t.type,
-      `S/ ${t.amount.toLocaleString('es-PE', { minimumFractionDigits: 2 })}`
+      `S/ ${Number(t.amount).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     ]) || [];
 
     autoTable(doc, {
@@ -362,165 +422,121 @@ const Analysis = ({ filterStatus }: { filterStatus?: string }) => {
       </h1>
 
       {/* Selector Mejorado */}
-      <div className="w-full md:w-1/2" ref={wrapperRef}>
+      <div className="w-full md:w-1/2">
         <label className={`block text-xs font-bold ${subTextColor} uppercase tracking-wider mb-2 ml-1`}>
           Seleccionar Obra
         </label>
-        <div className="relative group">
-          <div 
-            className={`
-              flex items-center w-full px-4 py-3 
-              ${cardBg} border ${borderColor} rounded-xl shadow-sm 
-              transition-all duration-200 ease-in-out
-              cursor-text
-              ${isOpen 
-                ? 'border-blue-500 ring-4 ring-blue-500/10 shadow-md' 
-                : 'hover:border-blue-300 hover:shadow-md'
-              }
-            `}
-            onClick={() => setIsOpen(true)}
-          >
-            <Search 
-              size={20} 
-              className={`
-                mr-3 transition-colors duration-200
-                ${isOpen ? 'text-blue-500' : 'text-gray-400 group-hover:text-blue-400'}
-              `} 
-            />
-            <input 
-              type="text"
-              className={`flex-1 outline-none ${isDark ? 'text-gray-200' : 'text-gray-700'} placeholder-gray-400 bg-transparent font-medium`}
-              placeholder="Buscar obra..."
-              value={searchTerm}
-              onChange={(e) => {
-                  setSearchTerm(e.target.value);
-                  setIsOpen(true);
-              }}
-              onFocus={() => setIsOpen(true)}
-            />
-            <div className="flex items-center gap-2">
-              {searchTerm && (
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSearchTerm('');
-                    setIsOpen(true);
-                  }}
-                  className={`p-1 rounded-full text-gray-400 ${hoverBg} hover:text-gray-600 dark:hover:text-gray-300 transition-colors`}
-                >
-                   <X size={16} />
-                </button>
-              )}
-              <div className={`w-px h-5 ${borderColor}`}></div>
-              <ChevronDown 
-                size={20} 
-                className={`
-                  text-gray-400 transition-transform duration-200
-                  ${isOpen ? 'rotate-180 text-blue-500' : ''}
-                `} 
-              />
-            </div>
-          </div>
-
-          {isOpen && (
-            <div className={`absolute z-20 w-full mt-2 ${cardBg} border ${isDark ? 'border-gray-700' : 'border-gray-100'} rounded-xl shadow-xl max-h-80 overflow-auto animate-in fade-in zoom-in-95 duration-100`}>
-              <div className="p-1">
-                {filteredProjects.length > 0 ? (
-                  filteredProjects.map(project => {
-                    const isSelected = selectedProjectId === project.id?.toString();
-                    return (
-                      <div 
-                        key={project.id}
-                        className={`
-                          flex items-center justify-between px-4 py-3 rounded-lg cursor-pointer transition-colors
-                          ${isSelected 
-                            ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 font-medium' 
-                            : `${subTextColor} ${hoverBg} ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`
-                          }
-                        `}
-                        onClick={() => {
-                          setSelectedProjectId(project.id!.toString());
-                          setSearchTerm(project.name);
-                          setIsOpen(false);
-                        }}
-                      >
-                        <span>{project.name}</span>
-                        {isSelected && (
-                          <div className="w-2 h-2 rounded-full bg-blue-500"></div>
-                        )}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className={`px-4 py-8 text-center ${subTextColor}`}>
-                    <p className="text-sm">No se encontraron obras</p>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+        <SearchableSelect
+          options={projectOptions}
+          value={selectedProjectId}
+          onChange={setSelectedProjectId}
+          className="w-full"
+          placeholder="Buscar obra..."
+        />
       </div>
 
       {selectedProject ? (
+        <>
+        {isRisk && (
+            <div className={`${isDark ? 'bg-yellow-900 border-yellow-700' : 'bg-yellow-50 border-yellow-400'} border-l-4 p-4 rounded-md shadow-sm mb-6`}>
+            <div className="flex items-center">
+                <div className="flex-shrink-0">
+                <AlertCircle className="h-5 w-5 text-yellow-500" aria-hidden="true" />
+                </div>
+                <div className="ml-3">
+                <p className={`text-sm font-bold ${isDark ? 'text-yellow-200' : 'text-yellow-700'}`}>
+                    Atención: Esta obra está próxima a finalizar ({selectedProject.endDate}) y su avance es inferior al 80%.
+                </p>
+                </div>
+            </div>
+            </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {/* Row 1 */}
           <div className={`${cardBg} p-6 rounded-lg shadow-sm border-l-4 border-blue-500 transition-colors duration-200`}>
-            <p className={`text-sm ${subTextColor} mb-1`}>Nombre de Obra</p>
-            <h3 className={`text-lg font-bold ${textColor}`}>{selectedProject.name}</h3>
+            <p className={`text-sm ${subTextColor} mb-1 break-words`}>Nombre de Obra</p>
+            <h3 className={`text-[13px] font-bold text-justify ${textColor} break-words line-clamp-3`}>
+              {toSentenceCase(selectedProject.name)}
+            </h3>
+            {selectedProject.name.length > 100 && (
+              <button
+                onClick={() => setIsNameModalOpen(true)}
+                className="text-blue-500 hover:text-blue-700 text-xs font-normal focus:outline-none mt-1 hover:underline block"
+              >
+                Ver más
+              </button>
+            )}
           </div>
           
           <div className={`${cardBg} p-6 rounded-lg shadow-sm border-l-4 border-red-500 transition-colors duration-200`}>
-            <p className={`text-sm ${subTextColor} mb-1`}>Gastos</p>
-            <h3 className={`text-lg font-bold ${textColor}`}>
-              S/ {stats.expense.toLocaleString('es-PE', { minimumFractionDigits: 2 })}
+            <p className={`text-sm ${subTextColor} mb-1 break-words`}>Gastos</p>
+            <h3 className={`text-lg font-bold ${textColor} break-words`}>
+              S/ {stats.expense.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </h3>
           </div>
 
           <div className={`${cardBg} p-6 rounded-lg shadow-sm border-l-4 border-green-500 transition-colors duration-200`}>
-            <p className={`text-sm ${subTextColor} mb-1`}>Ingreso</p>
-            <h3 className={`text-lg font-bold ${textColor}`}>
-              S/ {stats.income.toLocaleString('es-PE', { minimumFractionDigits: 2 })}
+            <p className={`text-sm ${subTextColor} mb-1 break-words`}>Ingreso</p>
+            <h3 className={`text-lg font-bold ${textColor} break-words`}>
+              S/ {stats.income.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </h3>
           </div>
 
           {/* Row 2 */}
           <div className={`${cardBg} p-6 rounded-lg shadow-sm border-l-4 border-gray-500 transition-colors duration-200`}>
-            <p className={`text-sm ${subTextColor} mb-1`}>Estado</p>
-            <h3 className={`text-lg font-bold ${textColor}`}>{selectedProject.status}</h3>
+            <p className={`text-sm ${subTextColor} mb-1 break-words`}>Estado</p>
+            <h3 className={`text-lg font-bold ${textColor} break-words`}>{selectedProject.status}</h3>
           </div>
 
           <div className={`${cardBg} p-6 rounded-lg shadow-sm border-l-4 border-indigo-500 transition-colors duration-200`}>
-            <p className={`text-sm ${subTextColor} mb-1`}>Cliente</p>
-            <h3 className={`text-lg font-bold ${textColor}`}>{selectedProject.client}</h3>
+            <p className={`text-sm ${subTextColor} mb-1 break-words`}>Cliente</p>
+            <h3 className={`text-[13px] font-bold text-justify ${textColor} break-words line-clamp-3`}>
+              {toSentenceCase(selectedProject.client)}
+            </h3>
+            {selectedProject.client.length > 100 && (
+              <button
+                onClick={() => setIsClientModalOpen(true)}
+                className="text-blue-500 hover:text-blue-700 text-xs font-normal focus:outline-none mt-1 hover:underline block"
+              >
+                Ver más
+              </button>
+            )}
+          </div>
+
+          <div className={`${cardBg} p-6 rounded-lg shadow-sm border-l-4 border-cyan-500 transition-colors duration-200`}>
+            <p className={`text-sm ${subTextColor} mb-1 break-words`}>Fecha Inicio</p>
+            <h3 className={`text-lg font-bold ${textColor} break-words`}>
+              {selectedProject.startDate || 'No definida'}
+            </h3>
           </div>
 
           <div className={`${cardBg} p-6 rounded-lg shadow-sm border-l-4 border-yellow-500 transition-colors duration-200`}>
-            <p className={`text-sm ${subTextColor} mb-1`}>Fecha Fin</p>
-            <h3 className={`text-lg font-bold ${textColor}`}>
+            <p className={`text-sm ${subTextColor} mb-1 break-words`}>Fecha Fin</p>
+            <h3 className={`text-lg font-bold ${textColor} break-words`}>
               {selectedProject.endDate || 'No definida'}
             </h3>
           </div>
 
           {/* Row 3 */}
           <div className={`${cardBg} p-6 rounded-lg shadow-sm border-l-4 border-teal-500 transition-colors duration-200`}>
-            <p className={`text-sm ${subTextColor} mb-1`}>Rentabilidad</p>
+            <p className={`text-sm ${subTextColor} mb-1 break-words`}>Rentabilidad</p>
             <div className="flex items-center gap-2">
-              <span className={`text-lg font-bold ${stats.income - stats.expense >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-red-700 dark:text-red-400'}`}>
-                S/ {(stats.income - stats.expense).toLocaleString('es-PE', { minimumFractionDigits: 2 })}
+              <span className={`text-lg font-bold ${stats.income - stats.expense >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-red-700 dark:text-red-400'} break-words`}>
+                S/ {(stats.income - stats.expense).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
             </div>
           </div>
 
           <div className={`${cardBg} p-6 rounded-lg shadow-sm border-l-4 border-purple-500 transition-colors duration-200`}>
-            <p className={`text-sm ${subTextColor} mb-1`}>Valor de Obra</p>
-            <h3 className={`text-lg font-bold ${textColor}`}>
-              S/ {selectedProject.value.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <p className={`text-sm ${subTextColor} mb-1 break-words`}>Valor de Obra</p>
+            <h3 className={`text-lg font-bold ${textColor} break-words`}>
+              S/ {Number(selectedProject.value).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </h3>
           </div>
 
           <div className={`${cardBg} p-6 rounded-lg shadow-sm border-l-4 border-orange-500 transition-colors duration-200`}>
-            <p className={`text-sm ${subTextColor} mb-1`}>% Avance de Obra</p>
+            <p className={`text-sm ${subTextColor} mb-1 break-words`}>% Avance de Obra</p>
             <div className="flex items-center gap-2">
               <div className={`w-full ${isDark ? 'bg-gray-700' : 'bg-gray-200'} rounded-full h-2.5 flex-1`}>
                 <div 
@@ -537,16 +553,99 @@ const Analysis = ({ filterStatus }: { filterStatus?: string }) => {
             className={`${cardBg} p-6 rounded-lg shadow-sm border-l-4 border-gray-800 dark:border-gray-600 flex items-center justify-between cursor-pointer ${hoverBg} transition-colors duration-200`}
           >
             <div>
-              <p className={`text-sm ${subTextColor} mb-1`}>Documentos</p>
-              <h3 className={`text-lg font-bold ${textColor}`}>Ver PDF</h3>
+              <p className={`text-sm ${subTextColor} mb-1 break-words`}>Documentos</p>
+              <h3 className={`text-lg font-bold ${textColor} break-words`}>Ver PDF</h3>
             </div>
             <FileText size={32} className="text-red-500" />
           </div>
+
+          {/* Transactions Table */}
+          <div className={`${cardBg} p-6 rounded-lg shadow-sm md:col-span-3`}>
+            <h3 className={`text-lg font-bold ${textColor} mb-4`}>Detalle de Movimientos</h3>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <thead className={isDark ? 'bg-gray-700' : 'bg-gray-50'}>
+                  <tr>
+                    <th className={`px-6 py-3 text-left text-xs font-medium ${subTextColor} uppercase tracking-wider`}>Fecha</th>
+                    <th className={`px-6 py-3 text-left text-xs font-medium ${subTextColor} uppercase tracking-wider`}>Descripción</th>
+                    <th className={`px-6 py-3 text-left text-xs font-medium ${subTextColor} uppercase tracking-wider`}>Categoría</th>
+                    <th className={`px-6 py-3 text-left text-xs font-medium ${subTextColor} uppercase tracking-wider`}>Tipo</th>
+                    <th className={`px-6 py-3 text-right text-xs font-medium ${subTextColor} uppercase tracking-wider`}>Monto</th>
+                  </tr>
+                </thead>
+                <tbody className={`divide-y divide-gray-200 dark:divide-gray-700 ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+                  {transactions?.map((t) => (
+                    <tr key={t.id} className={hoverBg}>
+                      <td className={`px-6 py-4 whitespace-nowrap text-sm ${textColor}`}>
+                        {new Date(t.date).toLocaleDateString()}
+                      </td>
+                      <td className={`px-6 py-4 text-sm ${textColor}`}>
+                        {t.description}
+                      </td>
+                      <td className={`px-6 py-4 whitespace-nowrap text-sm ${textColor}`}>
+                        {t.category}
+                      </td>
+                      <td className={`px-6 py-4 whitespace-nowrap text-sm`}>
+                        <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                          t.type === 'Ingreso' 
+                            ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' 
+                            : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+                        }`}>
+                          {t.type}
+                        </span>
+                      </td>
+                      <td className={`px-6 py-4 whitespace-nowrap text-sm text-right font-medium ${
+                        t.type === 'Ingreso' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
+                      }`}>
+                        S/ {t.amount.toLocaleString('es-PE', { minimumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  ))}
+                  {(!transactions || transactions.length === 0) && (
+                    <tr>
+                      <td colSpan={5} className={`px-6 py-4 text-center text-sm ${subTextColor}`}>
+                        No hay movimientos registrados
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
+        </>
       ) : (
         <div className={`text-center py-10 ${subTextColor}`}>
           Seleccione una obra para ver el análisis
         </div>
+      )}
+
+      {selectedProject && (
+        <>
+          <Modal
+            isOpen={isNameModalOpen}
+            onClose={() => setIsNameModalOpen(false)}
+            title="Nombre de Obra"
+          >
+            <div className="p-1">
+              <p className={`text-base text-justify ${textColor} break-words leading-relaxed`}>
+                {toSentenceCase(selectedProject.name)}
+              </p>
+            </div>
+          </Modal>
+
+          <Modal
+            isOpen={isClientModalOpen}
+            onClose={() => setIsClientModalOpen(false)}
+            title="Cliente"
+          >
+            <div className="p-1">
+              <p className={`text-base text-justify ${textColor} break-words leading-relaxed`}>
+                {toSentenceCase(selectedProject.client)}
+              </p>
+            </div>
+          </Modal>
+        </>
       )}
     </div>
   );

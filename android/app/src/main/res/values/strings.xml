@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Obra Check</string>
+    <string name="title_activity_main">Obra Check</string>
+    <string name="package_name">com.obras.app</string>
+    <string name="custom_url_scheme">com.obras.app</string>
+</resources>

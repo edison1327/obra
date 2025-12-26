@@ -1,14 +1,19 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
-import { Plus, Minus, Package, Search, Filter, Calendar, RotateCcw, AlertTriangle, Bell, X } from 'lucide-react';
+import { Plus, Minus, Package, Search, Filter, Calendar, RotateCcw, AlertTriangle, Bell, X, FileText, BarChart2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import ConfirmModal from '../components/ConfirmModal';
+import SearchableSelect from '../components/SearchableSelect';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { SyncService } from '../services/SyncService';
 
 const Warehouse = () => {
   const { theme } = useTheme();
+  const { hasPermission, user } = useAuth();
   const isDark = theme === 'dark';
 
   const navigate = useNavigate();
@@ -16,8 +21,9 @@ const Warehouse = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [showFilters, setShowFilters] = useState(false);
+  const [showFilters, setShowFilters] = useState(true);
   const [showLowStockModal, setShowLowStockModal] = useState(false);
+  const [showChart, setShowChart] = useState(false);
   const [deleteId, setDeleteId] = useState<number | null>(null);
 
   // Theme variables
@@ -33,7 +39,28 @@ const Warehouse = () => {
   const iconColor = isDark ? 'text-blue-400' : 'text-blue-600';
 
   const inventory = useLiveQuery(() => db.inventory.toArray()) || [];
-  const projects = useLiveQuery(() => db.projects.toArray()) || [];
+  
+  const movements = useLiveQuery(() => db.inventoryMovements.toArray()) || [];
+
+  const projects = useLiveQuery(async () => {
+    if (user?.projectId) {
+      const userProject = await db.projects.get(Number(user.projectId));
+      return userProject ? [userProject] : [];
+    }
+    return db.projects.toArray();
+  }, [user?.projectId]) || [];
+
+  const projectOptions = [
+    { value: '', label: 'Todas las Obras' },
+    ...projects.map(p => ({ value: p.id!, label: p.name }))
+  ];
+
+  // Auto-select project if user has one assigned
+  useEffect(() => {
+    if (user?.projectId) {
+      setSelectedProject(user.projectId.toString());
+    }
+  }, [user?.projectId]);
   
   const lowStockItems = inventory.filter(item => {
     const threshold = item.minStock !== undefined ? item.minStock : 10;
@@ -59,6 +86,7 @@ const Warehouse = () => {
     if (deleteId) {
       try {
         await db.inventory.delete(deleteId);
+        await SyncService.pushToRemote(false);
         toast.success('Artículo eliminado correctamente');
         setDeleteId(null);
       } catch (error) {
@@ -67,6 +95,35 @@ const Warehouse = () => {
       }
     }
   };
+
+  // Calculate Summary Stats
+  const today = new Date().toISOString().split('T')[0];
+  
+  const todayMovements = movements.filter(m => 
+    m.date === today && 
+    (!selectedProject || m.projectId === selectedProject)
+  ).length;
+
+  const totalItems = filteredInventory.length;
+  const criticalStockItems = filteredInventory.filter(i => i.quantity <= (i.minStock || 10)).length;
+
+  // Prepare chart data (Last 7 days)
+  const chartData = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - i));
+    const dateStr = d.toISOString().split('T')[0];
+    
+    const dayMovements = movements.filter(m => 
+        m.date === dateStr && 
+        (!selectedProject || m.projectId === selectedProject)
+    );
+
+    return {
+        date: d.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit' }),
+        Ingresos: dayMovements.filter(m => m.type === 'Ingreso').length,
+        Salidas: dayMovements.filter(m => m.type === 'Salida').length
+    };
+  });
 
   return (
     <div className="space-y-6">
@@ -89,7 +146,18 @@ const Warehouse = () => {
             )}
           </button>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <button 
+            onClick={() => setShowChart(!showChart)}
+            className={`px-4 py-2 rounded-lg border flex items-center gap-2 transition ${
+              showChart 
+                ? (isDark ? 'bg-purple-900/30 border-purple-800 text-purple-400' : 'bg-purple-50 border-purple-200 text-purple-700')
+                : (isDark ? 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50')
+            }`}
+          >
+            <BarChart2 size={20} />
+            <span className="hidden md:inline">Gráfico</span>
+          </button>
           <button 
             onClick={() => setShowFilters(!showFilters)}
             className={`px-4 py-2 rounded-lg border flex items-center gap-2 transition ${
@@ -99,29 +167,73 @@ const Warehouse = () => {
             }`}
           >
             <Filter size={20} />
-            Filtros
+            <span className="hidden md:inline">Filtros</span>
           </button>
-          <button 
-            onClick={() => navigate('/warehouse/new')}
-            className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-green-700 transition"
-          >
-            <Plus size={20} />
-            Registrar Ingreso
-          </button>
-          <button 
-            onClick={() => navigate('/warehouse/output')}
-            className="bg-red-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-red-700 transition"
-          >
-            <Minus size={20} />
-            Registrar Salida
-          </button>
-          <button 
-            onClick={() => navigate('/warehouse/returns')}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition"
-          >
-            <RotateCcw size={20} />
-            Ver Retorno
-          </button>
+          {hasPermission('inventory.create') && (
+            <>
+              <button 
+                onClick={() => navigate('/warehouse/new')}
+                className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-green-700 transition"
+              >
+                <Plus size={20} />
+                Registrar Ingreso
+              </button>
+              <button 
+                onClick={() => navigate('/warehouse/output')}
+                className="bg-red-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-red-700 transition"
+              >
+                <Minus size={20} />
+                Registrar Salida
+              </button>
+              <button 
+                onClick={() => navigate('/warehouse/returns')}
+                className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition"
+              >
+                <RotateCcw size={20} />
+                Ver Retorno
+              </button>
+              <button 
+                onClick={() => navigate('/warehouse/reports')}
+                className="bg-purple-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-purple-700 transition"
+              >
+                <FileText size={20} />
+                Reportes
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className={`${cardBg} p-4 rounded-lg shadow-sm border ${borderColor} flex items-center justify-between`}>
+          <div>
+            <p className={`text-sm font-medium ${subTextColor}`}>Total Ítems</p>
+            <p className={`text-2xl font-bold ${textColor}`}>{totalItems}</p>
+          </div>
+          <div className={`p-3 rounded-full ${isDark ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-600'}`}>
+            <Package size={24} />
+          </div>
+        </div>
+
+        <div className={`${cardBg} p-4 rounded-lg shadow-sm border ${borderColor} flex items-center justify-between`}>
+          <div>
+            <p className={`text-sm font-medium ${subTextColor}`}>Stock Crítico</p>
+            <p className={`text-2xl font-bold ${criticalStockItems > 0 ? 'text-red-500' : textColor}`}>{criticalStockItems}</p>
+          </div>
+          <div className={`p-3 rounded-full ${criticalStockItems > 0 ? (isDark ? 'bg-red-900/30 text-red-400' : 'bg-red-100 text-red-600') : (isDark ? 'bg-green-900/30 text-green-400' : 'bg-green-100 text-green-600')}`}>
+            <AlertTriangle size={24} />
+          </div>
+        </div>
+
+        <div className={`${cardBg} p-4 rounded-lg shadow-sm border ${borderColor} flex items-center justify-between`}>
+          <div>
+            <p className={`text-sm font-medium ${subTextColor}`}>Movimientos Hoy</p>
+            <p className={`text-2xl font-bold ${textColor}`}>{todayMovements}</p>
+          </div>
+          <div className={`p-3 rounded-full ${isDark ? 'bg-purple-900/30 text-purple-400' : 'bg-purple-100 text-purple-600'}`}>
+            <RotateCcw size={24} />
+          </div>
         </div>
       </div>
 
@@ -217,29 +329,44 @@ const Warehouse = () => {
         </div>
       )}
 
+      {/* Chart Section */}
+      {showChart && (
+        <div className={`${cardBg} p-4 rounded-lg shadow-sm border ${borderColor} h-80 animate-in fade-in slide-in-from-top-4 duration-300`}>
+          <h3 className={`text-lg font-bold mb-4 ${textColor}`}>Movimientos (Últimos 7 días)</h3>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#374151' : '#e5e7eb'} />
+              <XAxis dataKey="date" stroke={isDark ? '#9ca3af' : '#4b5563'} />
+              <YAxis stroke={isDark ? '#9ca3af' : '#4b5563'} allowDecimals={false} />
+              <Tooltip 
+                contentStyle={{ backgroundColor: isDark ? '#1f2937' : '#fff', borderColor: isDark ? '#374151' : '#e5e7eb', color: isDark ? '#fff' : '#000' }} 
+              />
+              <Legend />
+              <Bar dataKey="Ingresos" fill="#10B981" name="Ingresos" />
+              <Bar dataKey="Salidas" fill="#EF4444" name="Salidas" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
       {/* Filter Section */}
-      <div className={`${cardBg} p-6 rounded-lg shadow-sm space-y-4 ${showFilters ? 'block' : 'hidden md:block'}`}>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className={`${cardBg} p-6 rounded-lg shadow-sm space-y-4 ${showFilters ? 'block' : 'hidden'}`}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           
           {/* 1. Select Project (Obra) */}
-          <div className="lg:col-span-1">
+          <div className="md:col-span-1">
             <label className={`block text-sm font-medium ${subTextColor} mb-1`}>Obra</label>
-            <select
+            <SearchableSelect
+              options={projectOptions}
               value={selectedProject}
-              onChange={(e) => setSelectedProject(e.target.value)}
-              className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${textColor}`}
-            >
-              <option value="">Todas las Obras</option>
-              {projects.map(project => (
-                <option key={project.id} value={project.id?.toString()}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedProject}
+              className="w-full"
+              placeholder="Todas las Obras"
+            />
           </div>
 
           {/* 2. Search by Name */}
-          <div className="lg:col-span-1">
+          <div className="md:col-span-1">
             <label className={`block text-sm font-medium ${subTextColor} mb-1`}>Buscar Item</label>
             <div className="relative">
               <Search className={`absolute left-3 top-1/2 -translate-y-1/2 ${isDark ? 'text-gray-500' : 'text-gray-400'}`} size={18} />
@@ -254,7 +381,7 @@ const Warehouse = () => {
           </div>
 
           {/* 3. Filter by Dates */}
-          <div className="lg:col-span-2">
+          <div className="md:col-span-2">
             <label className={`block text-sm font-medium ${subTextColor} mb-1`}>Rango de Fechas</label>
             <div className="flex gap-2">
               <div className="relative flex-1">
@@ -316,7 +443,24 @@ const Warehouse = () => {
                       </div>
                     </td>
                     <td className={`px-6 py-4 whitespace-nowrap text-sm ${subTextColor}`}>{item.category}</td>
-                    <td className={`px-6 py-4 whitespace-nowrap text-sm font-bold ${textColor}`}>{item.quantity}</td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex flex-col">
+                        <span className={`text-sm font-bold ${textColor}`}>{item.quantity}</span>
+                        {/* Simple progress bar for stock level relative to minStock * 3 (arbitrary max visual) */}
+                        <div className="w-24 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full mt-1 overflow-hidden">
+                          <div 
+                            className={`h-full rounded-full ${
+                              item.quantity <= (item.minStock || 10) 
+                                ? 'bg-red-500' 
+                                : item.quantity <= (item.minStock || 10) * 2 
+                                  ? 'bg-yellow-500' 
+                                  : 'bg-green-500'
+                            }`}
+                            style={{ width: `${Math.min((item.quantity / ((item.minStock || 10) * 3)) * 100, 100)}%` }}
+                          />
+                        </div>
+                      </div>
+                    </td>
                     <td className={`px-6 py-4 whitespace-nowrap text-sm ${subTextColor}`}>{item.unit}</td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
@@ -328,18 +472,22 @@ const Warehouse = () => {
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      <button 
-                        onClick={() => navigate(`/warehouse/edit/${item.id}`)}
-                        className={`mr-3 ${isDark ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-900'}`}
-                      >
-                        Editar
-                      </button>
-                      <button 
-                        onClick={() => setDeleteId(item.id!)}
-                        className={isDark ? 'text-red-400 hover:text-red-300' : 'text-red-600 hover:text-red-900'}
-                      >
-                        Eliminar
-                      </button>
+                      {hasPermission('inventory.edit') && (
+                        <button 
+                          onClick={() => navigate(`/warehouse/edit/${item.id}`)}
+                          className={`mr-3 ${isDark ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-900'}`}
+                        >
+                          Editar
+                        </button>
+                      )}
+                      {hasPermission('inventory.delete') && (
+                        <button 
+                          onClick={() => setDeleteId(item.id!)}
+                          className={isDark ? 'text-red-400 hover:text-red-300' : 'text-red-600 hover:text-red-900'}
+                        >
+                          Eliminar
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))

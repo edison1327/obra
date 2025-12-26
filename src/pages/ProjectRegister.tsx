@@ -1,14 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Save, X } from 'lucide-react';
-import { db } from '../db/db';
+import { db, Client } from '../db/db';
 import toast from 'react-hot-toast';
+import { SyncService } from '../services/SyncService';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import SearchableSelect from '../components/SearchableSelect';
 
 const ProjectRegister = () => {
   const navigate = useNavigate();
   const { id } = useParams();
   const { theme } = useTheme();
+  const { user } = useAuth();
 
   const isDark = theme === 'dark';
   const cardBg = isDark ? 'bg-gray-800' : 'bg-white';
@@ -17,10 +21,12 @@ const ProjectRegister = () => {
   const inputBg = isDark ? 'bg-gray-700' : 'bg-white';
   const inputBorder = isDark ? 'border-gray-600' : 'border-gray-300';
   const inputText = isDark ? 'text-white' : 'text-gray-900';
-  const summaryBg = isDark ? 'bg-gray-700/50' : 'bg-gray-50';
-  const summaryLabel = isDark ? 'text-gray-400' : 'text-gray-600';
-  const summaryValue = isDark ? 'text-white' : 'text-gray-800';
   const borderColor = isDark ? 'border-gray-600' : 'border-gray-200';
+
+  const canEditFinancials = user?.role && (
+    user.role.toLowerCase() === 'administrador general' || 
+    user.role.toLowerCase() === 'administrador de obra'
+  );
 
   // Form State
   const [name, setName] = useState('');
@@ -45,6 +51,27 @@ const ProjectRegister = () => {
   const [costoDirecto, setCostoDirecto] = useState<string>('');
   const [gastosGeneralesPorc, setGastosGeneralesPorc] = useState<string>('');
   const [utilidadPorc, setUtilidadPorc] = useState<string>('');
+
+  const clientTypeOptions = [
+    { value: "Persona Natural", label: "Persona Natural" },
+    { value: "Persona Juridica", label: "Persona Juridica" },
+    { value: "Entidad Publica", label: "Entidad Publica" },
+  ];
+
+  const projectTypeOptions = [
+    { value: "Vivienda Unifamiliar", label: "Vivienda Unifamiliar" },
+    { value: "Edificio Multifamiliar", label: "Edificio Multifamiliar" },
+    { value: "Oficinas", label: "Oficinas" },
+    { value: "Comercial", label: "Comercial" },
+    { value: "Otro", label: "Otro" },
+  ];
+
+  const statusOptions = [
+    { value: "En Planificación", label: "En Planificación" },
+    { value: "En Ejecución", label: "En Ejecución" },
+    { value: "Paralizado", label: "Paralizado" },
+    { value: "Finalizado", label: "Finalizado" },
+  ];
 
   // Load data if editing
   useEffect(() => {
@@ -139,6 +166,30 @@ const ProjectRegister = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      // Save Client Data
+      if (client) {
+        const existingClient = await db.clients.where('name').equals(client).first();
+        const clientTypeMapped = clientType === 'Persona Natural' ? 'Persona' : 
+                                 (clientType === 'Persona Juridica' || clientType === 'Entidad Publica') ? 'Empresa' : undefined;
+        
+        const clientData: Client = {
+          name: client,
+          email: clientEmail,
+          phone: clientPhone,
+          type: clientTypeMapped
+        };
+
+        if (existingClient) {
+           await db.clients.update(existingClient.id!, {
+             email: clientEmail || existingClient.email,
+             phone: clientPhone || existingClient.phone,
+             type: clientTypeMapped || existingClient.type
+           });
+        } else {
+           await db.clients.add(clientData);
+        }
+      }
+
       const projectData = {
         name,
         client,
@@ -174,6 +225,9 @@ const ProjectRegister = () => {
         await db.projects.add(projectData);
       }
       
+      // Trigger auto-sync
+      await SyncService.pushToRemote(false);
+
       toast.success('Proyecto guardado correctamente');
       navigate('/projects');
     } catch (error) {
@@ -263,32 +317,24 @@ const ProjectRegister = () => {
 
             <div>
               <label className={`block text-sm font-medium ${labelColor} mb-1 transition-colors duration-150`}>Tipo de Cliente</label>
-              <select 
+              <SearchableSelect
+                options={clientTypeOptions}
                 value={clientType}
-                onChange={(e) => setClientType(e.target.value)}
-                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText} transition-colors duration-150`}
-              >
-                <option value="">Seleccione...</option>
-                <option value="Persona Natural">Persona Natural</option>
-                <option value="Empresa">Empresa</option>
-                <option value="Entidad Pública">Entidad Pública</option>
-              </select>
+                onChange={setClientType}
+                className="w-full"
+                placeholder="Seleccione..."
+              />
             </div>
 
             <div>
               <label className={`block text-sm font-medium ${labelColor} mb-1 transition-colors duration-150`}>Tipo de Obra</label>
-              <select 
+              <SearchableSelect
+                options={projectTypeOptions}
                 value={projectType}
-                onChange={(e) => setProjectType(e.target.value)}
-                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText} transition-colors duration-150`}
-              >
-                <option value="">Seleccione...</option>
-                <option value="Vivienda Unifamiliar">Vivienda Unifamiliar</option>
-                <option value="Edificio Multifamiliar">Edificio Multifamiliar</option>
-                <option value="Oficinas">Oficinas</option>
-                <option value="Comercial">Comercial</option>
-                <option value="Otro">Otro</option>
-              </select>
+                onChange={setProjectType}
+                className="w-full"
+                placeholder="Seleccione..."
+              />
             </div>
 
             {projectType === 'Otro' && (
@@ -325,20 +371,37 @@ const ProjectRegister = () => {
               />
             </div>
 
+            <div>
+              <label className={`block text-sm font-medium ${labelColor} mb-1 transition-colors duration-150`}>Fecha de Inicio</label>
+              <input 
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText} transition-colors duration-150`}
+              />
+            </div>
+
+            <div>
+              <label className={`block text-sm font-medium ${labelColor} mb-1 transition-colors duration-150`}>Fecha de Termino</label>
+              <input 
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText} transition-colors duration-150`}
+              />
+            </div>
+
             {id && (
               <>
                 <div>
                   <label className={`block text-sm font-medium ${labelColor} mb-1 transition-colors duration-150`}>Estado</label>
-                  <select 
+                  <SearchableSelect
+                    options={statusOptions}
                     value={status}
-                    onChange={(e) => setStatus(e.target.value)}
-                    className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText} transition-colors duration-150`}
-                  >
-                    <option value="En Planificación">En Planificación</option>
-                    <option value="En Ejecución">En Ejecución</option>
-                    <option value="Finalizado">Finalizado</option>
-                    <option value="Atrasado">Atrasado</option>
-                  </select>
+                    onChange={setStatus}
+                    className="w-full"
+                    placeholder="Seleccione..."
+                  />
                 </div>
                 <div>
                   <label className={`block text-sm font-medium ${labelColor} mb-1 transition-colors duration-150`}>% de Avance</label>
@@ -359,61 +422,88 @@ const ProjectRegister = () => {
           {/* Financials */}
           <div className={`border-t ${borderColor} pt-6 transition-colors duration-150`}>
             <h3 className={`text-lg font-semibold ${textColor} mb-4 transition-colors duration-150`}>Información Económica</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div>
-                <label className={`block text-sm font-medium ${labelColor} mb-1 transition-colors duration-150`}>Costo Directo (S/)</label>
-                <input 
-                  type="number" 
-                  value={costoDirecto}
-                  onChange={handleCostoDirectoChange}
-                  className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none text-right tabular-nums font-medium no-spinner ${inputBg} ${inputText} transition-colors duration-150`} 
-                />
-              </div>
-              <div>
-                <label className={`block text-sm font-medium ${labelColor} mb-1 transition-colors duration-150`}>Gastos Generales (%)</label>
-                <input 
-                  type="text" 
-                  value={gastosGeneralesPorc}
-                  onChange={(e) => handleNumberChange(e.target.value, setGastosGeneralesPorc)}
-                  onBlur={() => handleDecimalBlur(gastosGeneralesPorc, setGastosGeneralesPorc)}
-                  onFocus={() => handleDecimalFocus(gastosGeneralesPorc, setGastosGeneralesPorc)}
-                  className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none text-right tabular-nums font-medium ${inputBg} ${inputText} transition-colors duration-150`} 
-                />
-              </div>
-              <div>
-                <label className={`block text-sm font-medium ${labelColor} mb-1 transition-colors duration-150`}>Utilidad (%)</label>
-                <input 
-                  type="text" 
-                  value={utilidadPorc}
-                  onChange={(e) => handleNumberChange(e.target.value, setUtilidadPorc)}
-                  onBlur={() => handleDecimalBlur(utilidadPorc, setUtilidadPorc)}
-                  onFocus={() => handleDecimalFocus(utilidadPorc, setUtilidadPorc)}
-                  className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none text-right tabular-nums font-medium ${inputBg} ${inputText} transition-colors duration-150`} 
-                />
-              </div>
-            </div>
-
-            <div className={`mt-4 p-4 ${summaryBg} rounded-lg space-y-2 transition-colors duration-150`}>
-              <div className="flex justify-between text-sm">
-                <span className={`${summaryLabel} transition-colors duration-150`}>Gastos Generales (Monto):</span>
-                <span className={`font-medium ${summaryValue} transition-colors duration-150`}>S/ {formatCurrency(gastosGeneralesMonto)}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className={`${summaryLabel} transition-colors duration-150`}>Utilidad (Monto):</span>
-                <span className={`font-medium ${summaryValue} transition-colors duration-150`}>S/ {formatCurrency(utilidadMonto)}</span>
-              </div>
-              <div className={`flex justify-between text-sm border-t ${borderColor} pt-2 transition-colors duration-150`}>
-                <span className={`${summaryValue} font-medium transition-colors duration-150`}>Valor Referencial (Subtotal):</span>
-                <span className={`font-medium ${summaryValue} transition-colors duration-150`}>S/ {formatCurrency(valorReferencial)}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className={`${summaryLabel} transition-colors duration-150`}>IGV (18%):</span>
-                <span className={`font-medium ${summaryValue} transition-colors duration-150`}>S/ {formatCurrency(igv)}</span>
-              </div>
-              <div className={`flex justify-between text-sm font-bold pt-2 border-t ${borderColor} transition-colors duration-150`}>
-                <span className={`${isDark ? 'text-white' : 'text-gray-900'} transition-colors duration-150`}>Precio Total:</span>
-                <span className="text-blue-600 dark:text-blue-400">S/ {formatCurrency(precioTotal)}</span>
-              </div>
+            <div className="overflow-x-auto">
+              <table className={`w-full text-sm text-left ${textColor} border-collapse`}>
+                <thead className={`text-xs uppercase ${isDark ? 'bg-gray-700 text-gray-400' : 'bg-gray-50 text-gray-700'}`}>
+                  <tr>
+                    <th className="px-6 py-3 rounded-tl-lg">Descripción</th>
+                    <th className="px-6 py-3 text-center">Porcentaje (%)</th>
+                    <th className="px-6 py-3 text-right rounded-tr-lg">Parcial (S/)</th>
+                  </tr>
+                </thead>
+                <tbody className={`divide-y ${borderColor}`}>
+                  <tr className={`${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+                    <td className="px-6 py-4 font-medium">Costo Directo</td>
+                    <td className="px-6 py-4 text-center text-gray-500">-</td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex justify-end items-center gap-2">
+                        <span className="text-gray-500">S/</span>
+                        <input 
+                          type="number" 
+                          value={costoDirecto}
+                          onChange={handleCostoDirectoChange}
+                          disabled={!canEditFinancials}
+                          className={`w-32 px-3 py-1 border ${inputBorder} rounded focus:ring-blue-500 focus:border-blue-500 outline-none text-right tabular-nums font-medium no-spinner ${inputBg} ${inputText} transition-colors duration-150 ${!canEditFinancials ? 'opacity-50 cursor-not-allowed' : ''}`} 
+                          placeholder="0.00"
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                  <tr className={`${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+                    <td className="px-6 py-4 font-medium">Gastos Generales</td>
+                    <td className="px-6 py-4 text-center">
+                      <div className="flex justify-center">
+                        <input 
+                          type="text" 
+                          value={gastosGeneralesPorc}
+                          onChange={(e) => handleNumberChange(e.target.value, setGastosGeneralesPorc)}
+                          onBlur={() => handleDecimalBlur(gastosGeneralesPorc, setGastosGeneralesPorc)}
+                          onFocus={() => handleDecimalFocus(gastosGeneralesPorc, setGastosGeneralesPorc)}
+                          disabled={!canEditFinancials}
+                          className={`w-20 px-3 py-1 border ${inputBorder} rounded focus:ring-blue-500 focus:border-blue-500 outline-none text-center tabular-nums font-medium ${inputBg} ${inputText} transition-colors duration-150 ${!canEditFinancials ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          placeholder="0.00" 
+                        />
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-right tabular-nums">S/ {formatCurrency(gastosGeneralesMonto)}</td>
+                  </tr>
+                  <tr className={`${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+                    <td className="px-6 py-4 font-medium">Utilidad</td>
+                    <td className="px-6 py-4 text-center">
+                      <div className="flex justify-center">
+                        <input 
+                          type="text" 
+                          value={utilidadPorc}
+                          onChange={(e) => handleNumberChange(e.target.value, setUtilidadPorc)}
+                          onBlur={() => handleDecimalBlur(utilidadPorc, setUtilidadPorc)}
+                          onFocus={() => handleDecimalFocus(utilidadPorc, setUtilidadPorc)}
+                          disabled={!canEditFinancials}
+                          className={`w-20 px-3 py-1 border ${inputBorder} rounded focus:ring-blue-500 focus:border-blue-500 outline-none text-center tabular-nums font-medium ${inputBg} ${inputText} transition-colors duration-150 ${!canEditFinancials ? 'opacity-50 cursor-not-allowed' : ''}`} 
+                          placeholder="0.00"
+                        />
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-right tabular-nums">S/ {formatCurrency(utilidadMonto)}</td>
+                  </tr>
+                  <tr className={`${isDark ? 'bg-gray-700/50' : 'bg-gray-50'} font-semibold`}>
+                    <td className="px-6 py-4">Subtotal</td>
+                    <td className="px-6 py-4 text-center">-</td>
+                    <td className="px-6 py-4 text-right tabular-nums">S/ {formatCurrency(valorReferencial)}</td>
+                  </tr>
+                  <tr className={`${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+                    <td className="px-6 py-4 font-medium">IGV</td>
+                    <td className="px-6 py-4 text-center text-gray-500">18.00%</td>
+                    <td className="px-6 py-4 text-right tabular-nums">S/ {formatCurrency(igv)}</td>
+                  </tr>
+                  <tr className={`${isDark ? 'bg-gray-700' : 'bg-gray-100'} font-bold text-lg`}>
+                    <td className="px-6 py-4 rounded-bl-lg">Presupuesto Total</td>
+                    <td className="px-6 py-4 text-center">-</td>
+                    <td className="px-6 py-4 text-right tabular-nums rounded-br-lg text-blue-600 dark:text-blue-400">
+                      S/ {formatCurrency(precioTotal)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
 

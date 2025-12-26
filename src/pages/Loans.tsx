@@ -6,8 +6,11 @@ import { Plus, Banknote, Edit, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import ConfirmModal from '../components/ConfirmModal';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { SyncService } from '../services/SyncService';
 
 const Loans = () => {
+  const { hasPermission } = useAuth();
   const navigate = useNavigate();
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const { theme } = useTheme();
@@ -25,6 +28,7 @@ const Loans = () => {
     if (deleteId) {
       try {
         await db.loans.delete(deleteId);
+        await SyncService.pushToRemote(false);
         toast.success('Préstamo eliminado correctamente');
         setDeleteId(null);
       } catch (error) {
@@ -34,8 +38,8 @@ const Loans = () => {
     }
   };
 
-  const formatCurrency = (amount: number) => {
-    return `S/ ${amount.toLocaleString('es-PE', { minimumFractionDigits: 2 })}`;
+  const formatCurrency = (amount: number | string) => {
+    return `S/ ${Number(amount).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`;
   };
 
   return (
@@ -64,26 +68,36 @@ const Loans = () => {
                   <Banknote size={24} />
                 </div>
                 <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button 
-                    onClick={() => navigate(`/loans/edit/${loan.id}`)} 
-                    className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-full transition-colors"
-                    title="Editar"
-                  >
-                    <Edit size={16} />
-                  </button>
-                  <button 
-                    onClick={() => setDeleteId(loan.id!)} 
-                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-full transition-colors"
-                    title="Eliminar"
-                  >
-                    <Trash2 size={16} />
-                  </button>
+                  {hasPermission('loans.edit') && (
+                    <button 
+                      onClick={() => navigate(`/loans/edit/${loan.id}`)} 
+                      className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-full transition-colors"
+                      title="Editar"
+                    >
+                      <Edit size={16} />
+                    </button>
+                  )}
+                  {hasPermission('loans.delete') && (
+                    <button 
+                      onClick={() => setDeleteId(loan.id!)} 
+                      className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-full transition-colors"
+                      title="Eliminar"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
                 </div>
               </div>
               
               <div className="mb-3">
                 <h3 className={`text-lg font-bold ${textColor}`}>{loan.entity}</h3>
                 <p className={`text-sm ${subTextColor}`}>{loan.type}</p>
+                {loan.installments && (
+                  <p className={`text-xs ${subTextColor} mt-1`}>Cuotas: {loan.installments}</p>
+                )}
+                {loan.interestRate && (
+                  <p className={`text-xs ${subTextColor}`}>Interés: {loan.interestRate}%</p>
+                )}
               </div>
 
               <div className="flex items-center justify-between mb-2">

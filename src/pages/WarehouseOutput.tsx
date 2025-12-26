@@ -1,16 +1,28 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import { Save, X } from 'lucide-react';
 import toast from 'react-hot-toast';
+import SearchableSelect from '../components/SearchableSelect';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { SyncService } from '../services/SyncService';
 
 const WarehouseOutput = () => {
+  const { hasPermission, user } = useAuth();
+
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!hasPermission('inventory.create')) {
+      toast.error('No tiene permisos para registrar salidas');
+      navigate('/warehouse');
+    }
+  }, [hasPermission, navigate]);
   
   // Theme variables
   const textColor = isDark ? 'text-white' : 'text-gray-800';
@@ -22,8 +34,14 @@ const WarehouseOutput = () => {
   const inputText = isDark ? 'text-white' : 'text-gray-900';
   
   // Fetch projects
-  const projects = useLiveQuery(() => db.projects.toArray()) || [];
-  
+  const projects = useLiveQuery(async () => {
+    if (user?.projectId) {
+      const userProject = await db.projects.get(Number(user.projectId));
+      return userProject ? [userProject] : [];
+    }
+    return db.projects.toArray();
+  }, [user?.projectId]) || [];
+
   // State
   const [projectId, setProjectId] = useState('');
   const [name, setName] = useState('');
@@ -34,29 +52,96 @@ const WarehouseOutput = () => {
   const [reason, setReason] = useState('');
   const [withReturn, setWithReturn] = useState(false);
 
+  // Fetch inventory for selected project
+  const inventory = useLiveQuery(async () => {
+    if (!projectId) return [];
+    return db.inventory.where('projectId').equals(projectId).toArray();
+  }, [projectId]) || [];
+
+  const itemOptions = inventory.map(item => ({
+    value: item.name,
+    label: `${item.name} (Stock: ${item.quantity} ${item.unit})`
+  }));
+
+  // Auto-fill unit when item is selected
+  useEffect(() => {
+    const item = inventory.find(i => i.name === name);
+    if (item) {
+      setUnit(item.unit);
+    }
+  }, [name, inventory]);
+
+  const unitOptions = [
+    { value: "Unidad", label: "Unidad" },
+    { value: "Global", label: "Global" },
+    { value: "m2", label: "m2" },
+    { value: "ml", label: "ml" },
+    { value: "kg", label: "kg" },
+    { value: "m3", label: "m3" },
+    { value: "bolsa", label: "bolsa" },
+    { value: "galon", label: "galon" },
+  ];
+
+  // Auto-select project if user has one assigned
+  useEffect(() => {
+    if (user?.projectId) {
+      setProjectId(user.projectId.toString());
+    }
+  }, [user?.projectId]);
+
+  const projectOptions = projects.map(p => ({ value: p.id!, label: p.name }));
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    try {
-      // 1. If withReturn is true, create a return record
-      if (withReturn) {
-        await db.returns.add({
-          projectId,
-          name,
-          receiver,
-          dateOut: date,
-          quantity: Number(quantity),
-          unit,
-          status: 'Pending'
-        });
-      }
+    if (!hasPermission('inventory.create')) {
+      toast.error('No tiene permisos para registrar salidas');
+      return;
+    }
 
-      // 2. Try to update inventory stock (Simple name match for now)
-      const item = await db.inventory.where({ projectId, name }).first();
-      if (item) {
-        const newQuantity = item.quantity - Number(quantity);
-        await db.inventory.update(item.id!, { quantity: newQuantity });
-      }
+    if (!projectId) {
+      toast.error('Debe seleccionar una obra');
+      return;
+    }
+
+    try {
+      await db.transaction('rw', db.returns, db.inventory, db.inventoryMovements, async () => {
+          // 1. If withReturn is true, create a return record
+          if (withReturn) {
+            await db.returns.add({
+              projectId,
+              name,
+              receiver,
+              dateOut: date,
+              quantity: Number(quantity),
+              unit,
+              status: 'Pending'
+            });
+          }
+
+          // 2. Try to update inventory stock (Simple name match for now)
+          const item = await db.inventory.where({ projectId, name }).first();
+          if (item) {
+            const newQuantity = item.quantity - Number(quantity);
+            await db.inventory.update(item.id!, { quantity: newQuantity });
+            
+            // Record movement
+            await db.inventoryMovements.add({
+                projectId,
+                inventoryId: item.id!,
+                itemName: name,
+                type: 'Salida',
+                quantity: Number(quantity),
+                unit,
+                date,
+                reference: receiver ? 'Entregado a: ' + receiver : 'Salida de Almacén',
+                notes: reason,
+                user: user?.username
+            });
+          }
+      });
+
+      await SyncService.pushToRemote(false);
 
       toast.success('Salida registrada correctamente');
       navigate('/warehouse');
@@ -88,29 +173,25 @@ const WarehouseOutput = () => {
             {/* Obra */}
             <div className="md:col-span-2">
               <label className={`block text-sm font-medium ${labelColor} mb-1`}>Obra <span className="text-red-500">*</span></label>
-              <select
-                required
+              <SearchableSelect
+                options={projectOptions}
                 value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
-              >
-                <option value="">Seleccione una obra...</option>
-                {projects.map(project => (
-                  <option key={project.id} value={project.id?.toString()}>{project.name}</option>
-                ))}
-              </select>
+                onChange={setProjectId}
+                className="w-full"
+                placeholder="Seleccione una obra..."
+              />
             </div>
 
             {/* Nombre del Artículo (Searchable ideally, but simple input for now) */}
             <div className="md:col-span-2">
               <label className={`block text-sm font-medium ${labelColor} mb-1`}>Nombre del Artículo <span className="text-red-500">*</span></label>
-              <input 
-                required
-                type="text" 
+              <SearchableSelect
+                options={itemOptions}
                 value={name}
-                onChange={(e) => setName(e.target.value)}
-                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText} ${isDark ? 'placeholder-gray-400' : ''}`}
+                onChange={setName}
+                className="w-full"
                 placeholder="Buscar artículo..."
+                required
               />
             </div>
 
@@ -142,21 +223,14 @@ const WarehouseOutput = () => {
             {/* Unidad */}
             <div>
               <label className={`block text-sm font-medium ${labelColor} mb-1`}>Unidad <span className="text-red-500">*</span></label>
-              <select
-                required
+              <SearchableSelect
+                options={unitOptions}
                 value={unit}
-                onChange={(e) => setUnit(e.target.value)}
-                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
-              >
-                <option value="">Seleccione unidad...</option>
-                <option value="unidades">Unidades</option>
-                <option value="bolsas">Bolsas</option>
-                <option value="varillas">Varillas</option>
-                <option value="m3">Metros Cúbicos (m3)</option>
-                <option value="kg">Kilogramos (kg)</option>
-                <option value="lt">Litros (lt)</option>
-                <option value="baldes">Baldes</option>
-              </select>
+                onChange={setUnit}
+                className="w-full"
+                placeholder="Seleccione unidad..."
+                required
+              />
             </div>
 
             {/* Responsable/Receptor */}

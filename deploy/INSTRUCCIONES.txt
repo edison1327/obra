@@ -1,0 +1,52 @@
+INSTRUCCIONES DE DESPLIEGUE (DEPLOY)
+======================================
+
+Para publicar tu aplicación web en un hosting, sigue estos pasos:
+
+1. ARCHIVOS FRONTEND (La Aplicación Web)
+----------------------------------------
+Sube todo el contenido de la carpeta `public_html` a la carpeta pública de tu hosting.
+- En cPanel suele llamarse `public_html`.
+- En otros hostings puede ser `www` o `htdocs`.
+- IMPORTANTE: Sube los ARCHIVOS que están DENTRO de `public_html`, no la carpeta en sí. Debes ver `index.html` en la raíz de tu dominio.
+
+2. BASE DE DATOS (Backend)
+--------------------------
+Tu aplicación necesita una base de datos MySQL para sincronizar datos entre dispositivos.
+
+A. Crear la Base de Datos:
+   - Entra al panel de control de tu hosting (cPanel, Plesk, etc.).
+   - Crea una nueva Base de Datos MySQL (ej. `miusuario_obras`).
+   - Crea un Usuario de Base de Datos y asígnale una contraseña segura.
+   - Añade el usuario a la base de datos con TODOS los privilegios.
+
+B. Importar el Esquema (Tablas):
+   - Abre phpMyAdmin en tu hosting.
+   - Selecciona la base de datos que acabas de crear.
+   - Ve a la pestaña "Importar".
+   - Selecciona el archivo `backend/schema.sql` que se encuentra en este paquete.
+   - Haz clic en "Continuar" para crear todas las tablas necesarias.
+   - IMPORTANTE: Esto creará un usuario administrador por defecto:
+     Usuario: admin
+     Contraseña: 123456
+
+C. Subir el API Bridge:
+   - Sube el archivo `backend/api.php` a tu hosting.
+   - Puedes ponerlo en la raíz (junto al index.html) o en una carpeta llamada `api`.
+   - Ejemplo: `public_html/api.php` o `public_html/api/api.php`.
+
+3. CONFIGURACIÓN FINAL EN LA APP
+--------------------------------
+Una vez que tu sitio esté en línea:
+1. Abre tu aplicación web en el navegador (ej. `https://tudominio.com`).
+2. Ve a la página de "Configuración" (Settings).
+3. Ingresa los datos de conexión a tu Base de Datos Remota:
+   - Host: Generalmente es `localhost` (si el archivo api.php está en el mismo servidor que la BD).
+   - Puerto: 3306
+   - Usuario: El usuario de la base de datos que creaste en el paso 2A.
+   - Contraseña: La contraseña del usuario de la BD.
+   - Base de Datos: El nombre de la base de datos (ej. `miusuario_obras`).
+   - URL del API: La dirección web donde subiste el archivo api.php (ej. `https://tudominio.com/api.php`).
+4. Haz clic en "Guardar y Sincronizar".
+
+Si todo es correcto, verás un mensaje de éxito y el indicador de estado cambiará a "Conectado".

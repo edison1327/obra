@@ -2,12 +2,15 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
+import { SyncService } from '../services/SyncService';
 import { ArrowLeft } from 'lucide-react';
 import toast from 'react-hot-toast';
 import ConfirmModal from '../components/ConfirmModal';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 
 const WarehouseReturns = () => {
+  const { hasPermission, user } = useAuth();
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
@@ -24,12 +27,15 @@ const WarehouseReturns = () => {
   const [returnId, setReturnId] = useState<number | null>(null);
   
   // Fetch pending returns
-  const pendingReturns = useLiveQuery(() => 
-    db.returns
-      .where('status')
-      .equals('Pending')
-      .toArray()
-  ) || [];
+  const pendingReturns = useLiveQuery(async () => {
+    const allPending = await db.returns.where('status').equals('Pending').toArray();
+    
+    if (user?.projectId) {
+      return allPending.filter(r => r.projectId === user.projectId);
+    }
+    
+    return allPending;
+  }, [user?.projectId]) || [];
 
   const handleReturn = async () => {
     if (returnId) {
@@ -46,6 +52,8 @@ const WarehouseReturns = () => {
              await db.inventory.update(inventoryItem.id!, { quantity: inventoryItem.quantity + returnItem.quantity });
            }
         }
+
+        await SyncService.pushToRemote(false);
 
         toast.success('Devolución registrada correctamente');
         setReturnId(null);
@@ -97,12 +105,14 @@ const WarehouseReturns = () => {
                     <p><span className="font-medium">Cantidad:</span> {item.quantity} {item.unit}</p>
                   </div>
                 </div>
-                <button
-                  onClick={() => setReturnId(item.id!)}
-                  className="px-4 py-2 bg-green-600 dark:bg-green-500 text-white rounded-lg hover:bg-green-700 dark:hover:bg-green-600 transition font-medium whitespace-nowrap"
-                >
-                  Confirmar Retorno
-                </button>
+                {hasPermission('inventory.edit') && (
+                  <button
+                    onClick={() => setReturnId(item.id!)}
+                    className="px-4 py-2 bg-green-600 dark:bg-green-500 text-white rounded-lg hover:bg-green-700 dark:hover:bg-green-600 transition font-medium whitespace-nowrap"
+                  >
+                    Confirmar Retorno
+                  </button>
+                )}
               </div>
             ))
           )}

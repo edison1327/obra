@@ -5,12 +5,15 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import ConfirmModal from '../components/ConfirmModal';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { SyncService } from '../services/SyncService';
 
 const Users = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; id: number | null }>({ isOpen: false, id: null });
   const navigate = useNavigate();
   const { theme } = useTheme();
+  const { hasPermission } = useAuth();
   const isDark = theme === 'dark';
 
   const cardBg = isDark ? 'bg-gray-800' : 'bg-white';
@@ -41,6 +44,7 @@ const Users = () => {
   const confirmDelete = async () => {
     if (deleteModal.id) {
       await db.users.delete(deleteModal.id);
+      await SyncService.pushToRemote(false);
       setDeleteModal({ isOpen: false, id: null });
     }
   };
@@ -52,15 +56,17 @@ const Users = () => {
   return (
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <h1 className={`text-2xl font-bold ${textColor}`}>Gestión de Usuarios</h1>
-        <Link
-          to="/users/new"
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition"
-        >
-          <Plus size={20} />
-          Nuevo Usuario
-        </Link>
-      </div>
+          <h1 className={`text-2xl font-bold ${textColor}`}>Gestión de Usuarios</h1>
+          {hasPermission('users.create') && (
+            <Link
+              to="/users/new"
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition"
+            >
+              <Plus size={20} />
+              Nuevo Usuario
+            </Link>
+          )}
+        </div>
 
       {/* Search */}
       <div className={`${cardBg} p-4 rounded-lg shadow-sm`}>
@@ -134,20 +140,24 @@ const Users = () => {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <div className="flex items-center justify-end gap-2">
-                      <button 
-                        onClick={() => handleEdit(user.id!)}
-                        className={`text-gray-400 hover:text-indigo-600 ${isDark ? 'hover:text-indigo-400' : ''}`} 
-                        title="Editar"
-                      >
-                        <Edit size={18} />
-                      </button>
-                      <button 
-                        onClick={() => handleDelete(user.id!)}
-                        className={`text-gray-400 hover:text-red-600 ${isDark ? 'hover:text-red-400' : ''}`} 
-                        title="Eliminar"
-                      >
-                        <Trash2 size={18} />
-                      </button>
+                      {hasPermission('users.edit') && (
+                        <button 
+                          onClick={() => handleEdit(user.id!)}
+                          className={`text-gray-400 hover:text-indigo-600 ${isDark ? 'hover:text-indigo-400' : ''}`} 
+                          title="Editar"
+                        >
+                          <Edit size={18} />
+                        </button>
+                      )}
+                      {hasPermission('users.delete') && (
+                        <button 
+                          onClick={() => handleDelete(user.id!)}
+                          className={`text-gray-400 hover:text-red-600 ${isDark ? 'hover:text-red-400' : ''}`} 
+                          title="Eliminar"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

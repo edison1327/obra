@@ -1,13 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Save, X } from 'lucide-react';
+import { Save, X, Plus } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import toast from 'react-hot-toast';
+import SearchableSelect from '../components/SearchableSelect';
+import SupplierModal from '../components/SupplierModal';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { SyncService } from '../services/SyncService';
 
 const WarehouseRegister = () => {
   const { theme } = useTheme();
+  const { user } = useAuth();
   const isDark = theme === 'dark';
 
   const navigate = useNavigate();
@@ -23,10 +28,32 @@ const WarehouseRegister = () => {
   const inputText = isDark ? 'text-white' : 'text-gray-900';
   
   // Fetch projects for dropdown
-  const projects = useLiveQuery(() => db.projects.toArray()) || [];
+  const projects = useLiveQuery(async () => {
+    if (user?.projectId) {
+      const userProject = await db.projects.get(Number(user.projectId));
+      return userProject ? [userProject] : [];
+    }
+    return db.projects.toArray();
+  }, [user?.projectId]) || [];
 
   // Fetch categories
-  const categoriesList = useLiveQuery(() => db.categories.toArray()) || [];
+  const categoriesList = useLiveQuery(async () => {
+    // Fetch all categories of type 'warehouse' (Materiales, Herramientas, Equipos, EPPS)
+    return db.categories.where('type').equals('warehouse').toArray();
+  }) || [];
+
+  const categoryOptions = categoriesList.map(c => ({ value: c.name, label: c.name }));
+
+  const unitOptions = [
+    { value: "Unidad", label: "Unidad" },
+    { value: "Global", label: "Global" },
+    { value: "m2", label: "m2" },
+    { value: "ml", label: "ml" },
+    { value: "kg", label: "kg" },
+    { value: "m3", label: "m3" },
+    { value: "bolsa", label: "bolsa" },
+    { value: "galon", label: "galon" },
+  ];
 
   // State
   const [projectId, setProjectId] = useState('');
@@ -37,6 +64,24 @@ const WarehouseRegister = () => {
   const [minStock, setMinStock] = useState('10');
   const [status, setStatus] = useState('In Stock');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [supplierId, setSupplierId] = useState('');
+  const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
+
+  // Fetch suppliers
+  const suppliers = useLiveQuery(() => db.suppliers.toArray()) || [];
+  const supplierOptions = suppliers.map(s => ({ value: s.id!, label: s.name }));
+
+  const handleSupplierSuccess = (newSupplierId: number) => {
+    setSupplierId(newSupplierId.toString());
+    setIsSupplierModalOpen(false);
+  };
+
+  // Auto-select project if user has one assigned
+  useEffect(() => {
+    if (user?.projectId && !id) {
+      setProjectId(user.projectId.toString());
+    }
+  }, [user?.projectId, id]);
 
   // Load data if editing
   useEffect(() => {
@@ -52,31 +97,85 @@ const WarehouseRegister = () => {
           if (item.minStock !== undefined) setMinStock(item.minStock.toString());
           setStatus(item.status);
           setDate(item.date);
+          if (item.supplierId) setSupplierId(item.supplierId);
         }
       }
     };
     loadItem();
   }, [id]);
 
+  const projectOptions = projects.map(p => ({ value: p.id!, label: p.name }));
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    try {
-      const itemData = {
-        projectId,
-        name,
-        category,
-        quantity: Number(quantity),
-        unit,
-        minStock: Number(minStock),
-        status,
-        date
-      };
 
-      if (id) {
-        await db.inventory.update(Number(id), itemData);
-      } else {
-        await db.inventory.add(itemData);
-      }
+    if (!projectId) {
+      toast.error('Debe seleccionar una obra');
+      return;
+    }
+
+    try {
+      await db.transaction('rw', db.inventory, db.inventoryMovements, async () => {
+        const itemData = {
+          projectId,
+          name,
+          category,
+          quantity: Number(quantity),
+          unit,
+          minStock: Number(minStock),
+          status,
+          date,
+          supplierId
+        };
+
+        if (id) {
+          const prevItem = await db.inventory.get(Number(id));
+          if (prevItem) {
+            const diff = Number(quantity) - prevItem.quantity;
+            if (diff > 0) {
+               await db.inventoryMovements.add({
+                  projectId,
+                  inventoryId: Number(id),
+                  itemName: name,
+                  type: 'Ingreso',
+                  quantity: diff,
+                  unit,
+                  date,
+                  reference: supplierId ? 'Proveedor ID: ' + supplierId : 'Ajuste de Stock',
+                  user: user?.username
+              });
+            } else if (diff < 0) {
+               await db.inventoryMovements.add({
+                  projectId,
+                  inventoryId: Number(id),
+                  itemName: name,
+                  type: 'Ajuste',
+                  quantity: Math.abs(diff),
+                  unit,
+                  date,
+                  reference: 'Ajuste Manual (Disminución)',
+                  user: user?.username
+              });
+            }
+          }
+          await db.inventory.update(Number(id), itemData);
+        } else {
+          const newId = await db.inventory.add(itemData);
+          await db.inventoryMovements.add({
+              projectId,
+              inventoryId: Number(newId),
+              itemName: name,
+              type: 'Ingreso',
+              quantity: Number(quantity),
+              unit,
+              date,
+              reference: supplierId ? 'Proveedor ID: ' + supplierId : 'Ingreso Inicial',
+              user: user?.username
+          });
+        }
+      });
+
+      await SyncService.pushToRemote(false);
 
       toast.success('Ingreso registrado correctamente');
       navigate('/warehouse');
@@ -108,23 +207,17 @@ const WarehouseRegister = () => {
             {/* Obra */}
             <div className="md:col-span-2">
               <label className={`block text-sm font-medium ${labelColor} mb-1`}>Obra <span className="text-red-500">*</span></label>
-              <select
-                required
+              <SearchableSelect
+                options={projectOptions}
                 value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
-              >
-                <option value="">Seleccione una obra...</option>
-                {projects.map(project => (
-                  <option key={project.id} value={project.id?.toString()}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
+                onChange={setProjectId}
+                className="w-full"
+                placeholder="Seleccione una obra..."
+              />
             </div>
 
             {/* Nombre */}
-            <div className="md:col-span-2">
+            <div className="md:col-span-1">
               <label className={`block text-sm font-medium ${labelColor} mb-1`}>Nombre del Artículo <span className="text-red-500">*</span></label>
               <input 
                 required
@@ -136,20 +229,38 @@ const WarehouseRegister = () => {
               />
             </div>
 
+            {/* Proveedor */}
+            <div className="md:col-span-1">
+              <div className="flex justify-between items-center mb-1">
+                <label className={`block text-sm font-medium ${labelColor}`}>Proveedor</label>
+                <button
+                  type="button"
+                  onClick={() => setIsSupplierModalOpen(true)}
+                  className="text-blue-600 hover:text-blue-800 text-xs flex items-center gap-1"
+                >
+                  <Plus size={14} /> Nuevo
+                </button>
+              </div>
+              <SearchableSelect
+                options={supplierOptions}
+                value={supplierId}
+                onChange={setSupplierId}
+                className="w-full"
+                placeholder="Seleccione proveedor..."
+              />
+            </div>
+
             {/* Categoría */}
             <div>
               <label className={`block text-sm font-medium ${labelColor} mb-1`}>Categoría <span className="text-red-500">*</span></label>
-              <select
+              <SearchableSelect
                 required
+                options={categoryOptions}
                 value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
-              >
-                <option value="">Seleccione categoría...</option>
-                {categoriesList.map(cat => (
-                  <option key={cat.id} value={cat.name}>{cat.name}</option>
-                ))}
-              </select>
+                onChange={setCategory}
+                className="w-full"
+                placeholder="Seleccione categoría..."
+              />
             </div>
 
             {/* Cantidad y Unidad y Stock Mínimo */}
@@ -170,25 +281,14 @@ const WarehouseRegister = () => {
 
               <div>
                 <label className={`block text-sm font-medium ${labelColor} mb-1`}>Unidad <span className="text-red-500">*</span></label>
-                <select
-                  required
+                <SearchableSelect
+                  options={unitOptions}
                   value={unit}
-                  onChange={(e) => setUnit(e.target.value)}
-                  className={`w-full px-4 py-2 border ${inputBorder} rounded-lg focus:ring-blue-500 focus:border-blue-500 outline-none ${inputBg} ${inputText}`}
-                >
-                  <option value="">Seleccione...</option>
-                  <option value="unidades">Unidades</option>
-                  <option value="bolsas">Bolsas</option>
-                  <option value="m3">Metros Cúbicos (m3)</option>
-                  <option value="m2">Metros Cuadrados (m2)</option>
-                  <option value="ml">Metros Lineales (ml)</option>
-                  <option value="kg">Kilogramos (kg)</option>
-                  <option value="litros">Litros</option>
-                  <option value="galones">Galones</option>
-                  <option value="cajas">Cajas</option>
-                  <option value="varillas">Varillas</option>
-                  <option value="millares">Millares</option>
-                </select>
+                  onChange={setUnit}
+                  className="w-full"
+                  placeholder="Seleccione..."
+                  required
+                />
               </div>
 
               <div>
@@ -237,6 +337,12 @@ const WarehouseRegister = () => {
           </div>
         </form>
       </div>
+
+      <SupplierModal
+        isOpen={isSupplierModalOpen}
+        onClose={() => setIsSupplierModalOpen(false)}
+        onSuccess={handleSupplierSuccess}
+      />
     </div>
   );
 };
